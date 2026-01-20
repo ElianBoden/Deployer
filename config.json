@@ -1,0 +1,13 @@
+{
+    "github_repo": "YOUR_USERNAME/YOUR_REPO",
+    "update_interval": 3600,
+    "auto_restart": true,
+    "notify_on_update": true,
+    "required_packages": [
+        "pywin32",
+        "pyautogui",
+        "keyboard",
+        "requests",
+        "pillow"
+    ]
+}
