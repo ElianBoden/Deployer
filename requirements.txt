@@ -3,4 +3,4 @@ pyautogui
 keyboard
 requests
 pillow
-pyjokes>=0.6.0
+pyjokes
