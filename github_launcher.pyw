@@ -1,4 +1,4 @@
-# github_launcher.pyw - Downloads and runs script.py from temp, installs requirements
+# github_launcher.pyw - Downloads and runs script.py from temp, installs requirements only if needed
 import os
 import sys
 import subprocess
@@ -8,9 +8,109 @@ import time
 import traceback
 import atexit
 import threading
+import json
+
+def get_requirements_tracker_path():
+    """Get path to requirements tracker file in a common Windows location"""
+    # Use AppData/Local which exists on all Windows versions
+    appdata_local = os.getenv('LOCALAPPDATA')
+    tracker_folder = os.path.join(appdata_local, "GitHubLauncher")
+    
+    # Create folder if it doesn't exist
+    if not os.path.exists(tracker_folder):
+        try:
+            os.makedirs(tracker_folder, exist_ok=True)
+        except:
+            # Fallback to temp directory if we can't create folder
+            tracker_folder = tempfile.gettempdir()
+    
+    return os.path.join(tracker_folder, ".requirements_installed.txt")
+
+def are_requirements_already_installed(current_requirements):
+    """Check if current requirements are already installed"""
+    tracker_file = get_requirements_tracker_path()
+    
+    if not os.path.exists(tracker_file):
+        return False
+    
+    try:
+        with open(tracker_file, 'r', encoding='utf-8') as f:
+            installed_requirements = f.read().strip()
+        
+        # Compare current requirements with what we have tracked
+        return installed_requirements == current_requirements.strip()
+    except:
+        return False
+
+def mark_requirements_installed(requirements_content):
+    """Mark requirements as installed by saving to tracker file"""
+    tracker_file = get_requirements_tracker_path()
+    
+    try:
+        with open(tracker_file, 'w', encoding='utf-8') as f:
+            f.write(requirements_content.strip())
+        
+        # Hide the file on Windows
+        if os.name == 'nt':
+            subprocess.run(['attrib', '+h', tracker_file], 
+                         shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except:
+        return False
+
+def get_installed_packages():
+    """Get list of currently installed packages via pip"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        
+        if result.returncode == 0:
+            installed_packages = {}
+            for line in result.stdout.strip().split('\n'):
+                if '==' in line:
+                    package, version = line.split('==', 1)
+                    installed_packages[package.lower()] = version
+            return installed_packages
+    except:
+        pass
+    return {}
+
+def get_required_packages(requirements_content):
+    """Parse requirements.txt content"""
+    required_packages = []
+    
+    for line in requirements_content.strip().split('\n'):
+        line = line.strip()
+        # Skip comments and empty lines
+        if not line or line.startswith('#'):
+            continue
+        
+        # Extract package name (remove version specifiers)
+        package = line.split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip()
+        if package:
+            required_packages.append(package.lower())
+    
+    return required_packages
+
+def check_missing_packages(requirements_content):
+    """Check which required packages are not installed"""
+    required = get_required_packages(requirements_content)
+    installed = get_installed_packages()
+    
+    missing = []
+    for package in required:
+        if package not in installed:
+            missing.append(package)
+    
+    return missing
 
 def install_requirements():
-    """Download and install requirements from requirements.txt in GitHub repository"""
+    """Download and install requirements from requirements.txt only if needed"""
     try:
         # URL to requirements.txt on GitHub
         requirements_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/requirements.txt"
@@ -25,6 +125,21 @@ def install_requirements():
             print("requirements.txt is empty, skipping installation")
             return True
         
+        # Check if we already installed these exact requirements
+        if are_requirements_already_installed(requirements_content):
+            print("✓ Requirements already installed (verified by tracker)")
+            
+            # Double-check if any packages are missing
+            missing = check_missing_packages(requirements_content)
+            if missing:
+                print(f"⚠ Some packages missing: {', '.join(missing)}")
+                print("Proceeding with installation...")
+            else:
+                print("✓ All required packages are installed")
+                return True
+        
+        print("Installing required packages...")
+        
         # Save requirements to temp file
         temp_dir = tempfile.gettempdir()
         temp_req = os.path.join(temp_dir, f"requirements_{int(time.time())}.txt")
@@ -33,50 +148,88 @@ def install_requirements():
             f.write(requirements_content)
         
         print(f"Requirements saved to: {temp_req}")
-        print(f"Installing packages from requirements.txt...")
         
-        # Run pip install in background thread to avoid blocking
+        # Run pip install in background thread
         def run_pip_install():
             try:
-                # Try to upgrade pip first
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", "--upgrade", "pip"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except:
-                pass
-            
-            # Install requirements
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            
-            process = subprocess.Popen(
-                [sys.executable, "-m", "pip", "install", "-r", temp_req, "--user"],
-                startupinfo=startupinfo,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            # Wait for installation to complete with timeout
-            for _ in range(60):  # 60 seconds timeout
-                if process.poll() is not None:
-                    break
-                time.sleep(1)
-            
-            # Clean up temp requirements file
-            try:
-                os.remove(temp_req)
-            except:
-                pass
-            
-            if process.returncode == 0:
-                print("✓ Requirements installed successfully")
-            else:
-                print(f"⚠ Requirements installation completed with code: {process.returncode}")
+                # Check which packages are missing to avoid reinstalling everything
+                missing_packages = check_missing_packages(requirements_content)
+                
+                if missing_packages:
+                    print(f"Missing packages: {', '.join(missing_packages)}")
+                    
+                    # Create temp file with only missing packages
+                    missing_req = os.path.join(temp_dir, f"missing_req_{int(time.time())}.txt")
+                    
+                    # Filter requirements to only include missing packages
+                    with open(temp_req, 'r') as f:
+                        all_lines = f.readlines()
+                    
+                    missing_lines = []
+                    for line in all_lines:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        package_name = line.split('>')[0].split('<')[0].split('=')[0].split('~')[0].strip().lower()
+                        if package_name in missing_packages:
+                            missing_lines.append(line)
+                    
+                    if missing_lines:
+                        with open(missing_req, 'w') as f:
+                            f.write('\n'.join(missing_lines))
+                        
+                        # Install only missing packages
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        
+                        print(f"Installing {len(missing_lines)} missing package(s)...")
+                        process = subprocess.Popen(
+                            [sys.executable, "-m", "pip", "install", "-r", missing_req, "--user", "--quiet"],
+                            startupinfo=startupinfo,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                        
+                        # Wait for installation
+                        for _ in range(60):
+                            if process.poll() is not None:
+                                break
+                            time.sleep(1)
+                        
+                        try:
+                            os.remove(missing_req)
+                        except:
+                            pass
+                        
+                        if process.returncode == 0:
+                            print("✓ Missing packages installed successfully")
+                            # Mark all requirements as installed
+                            mark_requirements_installed(requirements_content)
+                        else:
+                            print(f"⚠ Package installation completed with code: {process.returncode}")
+                    else:
+                        print("✓ All packages are already installed")
+                        mark_requirements_installed(requirements_content)
+                else:
+                    print("✓ All required packages are already installed")
+                    mark_requirements_installed(requirements_content)
+                
+                # Clean up temp requirements file
+                try:
+                    os.remove(temp_req)
+                except:
+                    pass
+                
+            except Exception as e:
+                print(f"Error during pip installation: {e}")
         
         # Start installation in background thread
         install_thread = threading.Thread(target=run_pip_install, daemon=True)
         install_thread.start()
+        
+        # Wait a bit for installation to start
+        time.sleep(2)
         
         return True
         
@@ -88,8 +241,7 @@ def install_requirements():
             print(f"Error downloading requirements.txt: {e}")
             return False
     except Exception as e:
-        print(f"Error during requirements installation: {e}")
-        traceback.print_exc()
+        print(f"Error during requirements check: {e}")
         return False
 
 def delete_temp_file(temp_script_path):
@@ -188,13 +340,13 @@ def main():
     print("GitHub Auto-Deploy Launcher")
     print("=" * 60)
     
-    # Step 1: Install requirements
-    print("\n[1/2] Installing requirements...")
+    # Step 1: Install requirements (only if needed)
+    print("\n[1/2] Checking requirements...")
     install_requirements()
     
-    # Step 2: Wait a moment for installations to start
+    # Step 2: Wait a moment
     print("\n[2/2] Starting main script...")
-    time.sleep(2)  # Give pip a moment
+    time.sleep(1)
     
     # Run the script
     success = run_script_from_github()
