@@ -11,10 +11,92 @@ import json
 
 # ---------------- CONFIG ---------------- #
 TARGET_KEYWORDS = [
+    # General game platforms
     "crazygames",
+    "poki",
+    "kizi",
+    "y8",
+    "y8 games",
+    "armor games",
+    "miniclip",
+    "addicting games",
+    "kongregate",
+    "gameflare",
+    "friv",
+    "friv games",
+    "silvergames",
+    "lagged",
+    "unblocked games",
+    "unblocked games 66",
+    "unblocked games 76",
+    "unblocked games 911",
+    "cool math games",
+    "math playground games",
+
+    # Popular games
     "roblox",
+    "minecraft",
+    "fortnite",
+    "among us",
+    "call of duty",
+    "call of duty warzone",
+    "league of legends",
+    "valorant",
+    "counter strike",
+    "csgo",
+    "dota 2",
+    "overwatch",
+    "genshin impact",
+    "apex legends",
+    "pubg",
+    "clash royale",
+    "clash of clans",
+    "brawl stars",
+    "fifa",
+    "rocket league",
+
+    # Mobile / casual games
+    "subway surfers",
+    "temple run",
+    "geometry dash",
+    "bitlife",
+    "paper io",
+    "slither io",
+    "agar io",
+    "cookie clicker",
+    "idle games",
+    "clicker games",
+
+    # French / multilingual gaming phrases
     "jeux gratuits",
-    "joue maintenant", "poki"
+    "jeu gratuit",
+    "jeux en ligne",
+    "joue maintenant",
+    "jouer en ligne",
+    "spiele kostenlos",
+    "online spiele",
+    "juegos gratis",
+    "jugar ahora",
+
+    # Emulators & retro
+    "retro games",
+    "classic games",
+    "arcade games",
+    "flash games",
+    "browser games",
+    "nes games online",
+    "gba games online",
+
+    # Streaming & gaming communities
+    "twitch",
+    "twitch gaming",
+    "kick streaming",
+    "youtube gaming",
+    "discord gaming",
+    "steam",
+    "epic games",
+    "origin games",
+    "battle net"
 ]
 
 SPAM_SPEED = 0.05       # seconds between volume presses
