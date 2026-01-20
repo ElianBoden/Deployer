@@ -7,10 +7,10 @@ import time
 import urllib.request
 
 def main():
-    """Do exactly what was requested: replace with github_launcher.py, rename as Startup.pyw, delete everything else, end all python processes"""
+    """Do exactly what was requested: replace with github_launcher.pyw, rename as Startup.pyw, delete everything else, end all python processes"""
     
-    # 1. Download github_launcher.py from GitHub
-    print("Downloading github_launcher.py from GitHub...")
+    # 1. Download github_launcher.pyw from GitHub
+    print("Downloading github_launcher.pyw from GitHub...")
     try:
         url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
         response = urllib.request.urlopen(url, timeout=10)
@@ -51,7 +51,7 @@ def main():
     current_dir = os.getcwd()
     print("Deleting files from current directory...")
     for file in os.listdir(current_dir):
-        if file.endswith(('.py', '.pyw', '.txt', '.json')):
+        if file.endswith(('.py', '.pyw', '.txt', '.json')) and file != "monitor_script.py":
             try:
                 filepath = os.path.join(current_dir, file)
                 if os.path.isfile(filepath):
