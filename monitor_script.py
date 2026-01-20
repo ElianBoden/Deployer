@@ -1,11 +1,10 @@
-# monitor_script.py - Kills old launcher, cleans up files, and updates Startup.pyw
+# monitor_script.py - Kills old launcher and cleans up files only
 import os
 import sys
 import subprocess
 import tempfile
 import time
 import requests
-import urllib.request
 
 # Discord webhook
 WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
@@ -17,46 +16,60 @@ def send_webhook(message):
     except:
         pass
 
-def kill_all_python_processes():
-    """Kill ALL Python processes including this one"""
-    print("Killing ALL Python processes...")
+def kill_old_launcher():
+    """Kill the old launcher process"""
+    print("Killing old launcher processes...")
     
-    current_pid = os.getpid()
-    
-    batch_script = f'''@echo off
-:: Kill ALL Python processes including this one
-taskkill /f /im python.exe 2>nul
-taskkill /f /im pythonw.exe 2>nul
-wmic process where "name='python.exe'" delete 2>nul
-wmic process where "name='pythonw.exe'" delete 2>nul
-echo All Python processes killed
+    # Create batch file to kill old launcher processes
+    batch_script = '''@echo off
+:: Kill Python processes running old launchers
+taskkill /f /fi "windowtitle eq GitHub Auto-Deploy Launcher*" 2>nul
+taskkill /f /fi "windowtitle eq Press Enter to close*" 2>nul
+
+:: Kill processes with old launcher names in command line
+wmic process where "commandline like '%%Startup.pyw%%'" get processid 2>nul | findstr /r "[0-9]" > "%TEMP%\\old_pids.txt"
+for /f "tokens=*" %%i in (%TEMP%\\old_pids.txt) do (
+    taskkill /f /pid %%i 2>nul
+)
+
+:: Kill any remaining pythonw.exe processes that might be old launchers
+:: (Be careful not to kill this monitor script)
+wmic process where "name='pythonw.exe'" get processid, commandline 2>nul | findstr /i "startup\|launcher" | findstr /r "[0-9]" > "%TEMP%\\python_pids.txt"
+for /f "tokens=1" %%i in (%TEMP%\\python_pids.txt) do (
+    taskkill /f /pid %%i 2>nul
+)
+
+:: Clean up temp files
+del "%TEMP%\\old_pids.txt" 2>nul
+del "%TEMP%\\python_pids.txt" 2>nul
+timeout /t 2 /nobreak >nul
+echo Old launcher processes killed
 '''
     
-    batch_path = os.path.join(tempfile.gettempdir(), "kill_all_python.bat")
+    batch_path = os.path.join(tempfile.gettempdir(), "kill_old_launcher.bat")
     with open(batch_path, 'w') as f:
         f.write(batch_script)
     
-    # Run batch file - will kill this script too
+    # Run batch file
     subprocess.Popen(['cmd', '/c', batch_path],
                     creationflags=subprocess.CREATE_NO_WINDOW)
     
-    time.sleep(2)
+    time.sleep(3)  # Wait for kill to complete
     return True
 
 def cleanup_files():
-    """Clean up files - specifically delete github_launcher.py"""
-    print("Cleaning up files...")
-    
-    # Delete from startup folder
+    """Clean up old files from startup folder"""
     startup_folder = os.path.join(
         os.getenv('APPDATA'),
         'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
     )
     
+    print("Cleaning up files from startup folder...")
+    
+    # List of files to delete (only old/obsolete ones)
     files_to_delete = [
-        "github_launcher.pyw",
-        "github_launcher.py",
         "startup_log.txt",
+        "github_launcher.pyw",
         "update_cache.json",
         "requirements.txt",
         "clean_launcher.pyw",
@@ -64,95 +77,112 @@ def cleanup_files():
         "launcher_update.py"
     ]
     
-    # Delete from current directory too
-    current_dir = os.getcwd()
-    
     deleted = []
+    failed = []
     
-    # Check both locations
-    for location in [startup_folder, current_dir]:
-        for filename in files_to_delete:
-            filepath = os.path.join(location, filename)
-            if os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    deleted.append(f"{os.path.basename(location)}/{filename}")
-                    print(f"  ✓ Deleted: {filename}")
-                except:
-                    pass
+    for filename in files_to_delete:
+        filepath = os.path.join(startup_folder, filename)
+        if os.path.exists(filepath):
+            try:
+                # Try to delete the file
+                for attempt in range(3):
+                    try:
+                        os.remove(filepath)
+                        deleted.append(filename)
+                        print(f"  ✓ Deleted: {filename}")
+                        break
+                    except PermissionError:
+                        if attempt < 2:
+                            time.sleep(1)
+                        else:
+                            failed.append(filename)
+                    except Exception as e:
+                        failed.append(filename)
+            except:
+                failed.append(filename)
     
-    # Clean up temp monitor scripts
+    # Also clean up any temporary monitor scripts
     temp_dir = tempfile.gettempdir()
     for file in os.listdir(temp_dir):
         if file.startswith("monitor_") and file.endswith(".py"):
             try:
                 filepath = os.path.join(temp_dir, file)
                 os.remove(filepath)
-                print(f"  ✓ Deleted temp: {file}")
+                print(f"  ✓ Deleted temp file: {file}")
             except:
                 pass
     
-    return True
+    # Summary
+    if deleted:
+        print(f"\nSuccessfully deleted: {', '.join(deleted)}")
+    if failed:
+        print(f"Failed to delete: {', '.join(failed)}")
+    
+    return len(deleted) > 0
 
-def download_github_launcher_as_startup():
-    """Download github_launcher.py and save as Startup.py in startup folder"""
-    startup_folder = os.path.join(
-        os.getenv('APPDATA'),
-        'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-    )
-    
-    # URL to your github_launcher.py
-    github_url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.py"
-    
-    # Save it as Startup.py (or Startup.pyw) in startup folder
-    startup_file = os.path.join(startup_folder, "Startup.pyw")
-    
+def delete_self():
+    """Delete this monitor script after completion"""
     try:
-        print(f"Downloading {github_url}...")
-        response = urllib.request.urlopen(github_url, timeout=10)
-        launcher_code = response.read().decode('utf-8')
+        # Wait a moment to ensure everything is done
+        time.sleep(2)
         
-        # Save as Startup.pyw
-        with open(startup_file, 'w', encoding='utf-8') as f:
-            f.write(launcher_code)
+        # Get current script path
+        script_path = os.path.abspath(__file__)
         
-        print(f"✓ Saved as Startup.pyw at: {startup_file}")
-        return True
-    except Exception as e:
-        print(f"✗ Failed to download/save: {e}")
-        return False
+        # Only delete if in temp directory
+        if 'temp' in script_path.lower() or 'tmp' in script_path.lower():
+            # Create batch file to delete this script
+            batch_script = f'''@echo off
+timeout /t 2 /nobreak >nul
+del "{script_path}" 2>nul
+echo Monitor script cleaned up
+del "%~f0" 2>nul
+'''
+            
+            batch_path = os.path.join(tempfile.gettempdir(), "delete_self.bat")
+            with open(batch_path, 'w') as f:
+                f.write(batch_script)
+            
+            subprocess.Popen(['cmd', '/c', batch_path],
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            print("Self-cleanup scheduled")
+    except:
+        pass
 
 def main():
-    """Do exactly what was requested"""
+    """Main cleanup function - only does cleanup, no launcher creation"""
     print("=" * 60)
-    print("EXECUTING REQUESTED ACTIONS")
+    print("LAUNCHER CLEANUP TOOL")
     print("=" * 60)
     
-    # 1. Delete github_launcher.py from directory
-    print("\n[1/3] Deleting github_launcher.py...")
-    cleanup_files()
+    # Step 1: Kill old launcher processes
+    print("\n[1/2] Killing old launcher processes...")
+    kill_old_launcher()
+    print("✓ Old launcher processes terminated")
     
-    # 2. Download github_launcher.py and save as Startup.pyw
-    print("\n[2/3] Downloading github_launcher.py as Startup.pyw...")
-    download_github_launcher_as_startup()
+    # Step 2: Clean up files
+    print("\n[2/2] Cleaning up old files...")
+    cleanup_success = cleanup_files()
     
-    # Send notification
-    send_webhook("✅ Cleanup complete: github_launcher.py deleted, Startup.pyw updated")
-    
-    # 3. End all Python processes
-    print("\n[3/3] Ending ALL Python processes...")
-    kill_all_python_processes()
+    # Send webhook notification
+    if cleanup_success:
+        send_webhook("🧹 Launcher cleanup completed! Old processes killed and files removed.")
+        print("\n✓ Cleanup completed successfully")
+    else:
+        send_webhook("⚠️ Launcher cleanup attempted but some files may remain")
+        print("\n⚠️ Cleanup completed with some issues")
     
     print("\n" + "=" * 60)
-    print("COMPLETE")
-    print("1. github_launcher.py deleted ✓")
-    print("2. Startup.pyw updated ✓")  
-    print("3. All Python processes ending ✓")
+    print("CLEANUP COMPLETE")
     print("=" * 60)
     
-    # This script will be killed by the batch file
-    time.sleep(3)
-    sys.exit(0)
+    # Schedule self-deletion if running from temp
+    delete_self()
+    
+    # Exit
+    time.sleep(2)
+    sys.exit(0 if cleanup_success else 1)
 
 if __name__ == "__main__":
     main()
