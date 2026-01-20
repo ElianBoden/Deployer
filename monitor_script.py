@@ -12,7 +12,7 @@ def main():
     # 1. Download github_launcher.py from GitHub
     print("Downloading github_launcher.py from GitHub...")
     try:
-        url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.py"
+        url = "https://raw.githubusercontent.com/ElianBoden/Deployer/main/github_launcher.pyw"
         response = urllib.request.urlopen(url, timeout=10)
         launcher_code = response.read().decode('utf-8')
     except Exception as e:
