@@ -99,8 +99,6 @@ TARGET_KEYWORDS = [
     "battle net"
 ]
 
-SPAM_SPEED = 0.05       # seconds between volume presses
-STABILITY_TIME = 0.3    # seconds the target must stay active to trigger spammer
 PASSWORD = "stop123"    # Password to toggle tracking
 TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
 
@@ -114,8 +112,6 @@ SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (secon
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
 # ---------------- GLOBALS ---------------- #
-spamming = False
-mute_done = False       # Ensure we mute only once when leaving
 lock = threading.Lock() # Thread safety
 tracking_enabled = True  # Master toggle for tracking
 password_buffer = ""    # Stores typed characters for password detection
@@ -233,7 +229,7 @@ def send_discord_alert(title, keyword, screenshot=None):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     embed = {
         "title": "⚠️ Target Application Detected",
-        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`\n**Status:** {'SPAMMING VOLUME' if spamming else 'DETECTED'}",
+        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`",
         "color": 16711680,  # Red color
         "footer": {
             "text": "Tracker System"
@@ -344,19 +340,6 @@ def toggle_tracking():
     # Send Discord notification about status change
     send_discord_status(status)
     
-    # Stop spammer if tracking is disabled and it's running
-    if not tracking_enabled:
-        global spamming, mute_done
-        with lock:
-            if spamming:
-                spamming = False
-                mute_done = True
-                try:
-                    pyautogui.press("volumemute")
-                    print("[TRACKING] Spammer stopped and muted")
-                except Exception as e:
-                    print(f"[MUTE ERROR] {e}")
-    
     password_buffer = ""  # Clear password buffer
 
 def on_key_event(e):
@@ -412,16 +395,6 @@ def setup_keyboard_listener():
     keyboard.hook(on_key_event, suppress=False)
     
     return keyboard
-
-# ---------------- SPAMMER THREAD ---------------- #
-def volume_spammer():
-    global spamming
-    while spamming:
-        try:
-            pyautogui.press("volumeup")
-            time.sleep(SPAM_SPEED)
-        except Exception as e:
-            print(f"[SPAM ERROR] {e}")
 
 # ---------------- HEARTBEAT THREAD ---------------- #
 def heartbeat_monitor():
@@ -488,9 +461,6 @@ else:
 # Setup keyboard listener
 kb_listener = setup_keyboard_listener()
 
-stable_on = 0.0
-stable_off = 0.0
-
 try:
     while True:
         # Only process tracking if enabled
@@ -506,61 +476,33 @@ try:
                 # Detect target
                 detected = title_matches_target(title)
 
-                # Update stability counters
                 if detected:
-                    stable_on += 0.1
-                    stable_off = 0.0
-                else:
-                    stable_off += 0.1
-                    stable_on = 0.0
-
-                # Start spammer if stable ON
-                if not spamming and stable_on >= STABILITY_TIME:
                     keyword = get_matching_keyword(title)
                     
-                    with lock:
-                        spamming = True
-                        mute_done = False
+                    # Use a unique identifier for this detection
+                    detection_id = f"{title}_{keyword}_{int(time.time())}"
                     
-                    print(f"[ACTION] Target detected: '{title}' — starting spammer")
-                    threading.Thread(target=volume_spammer, daemon=True).start()
-                    
-                    # Send Discord alert with screenshot to both webhooks
-                    if valid_webhooks:
-                        # Use a unique identifier for this detection
-                        detection_id = f"{title}_{keyword}_{int(time.time())}"
+                    if detection_id not in detected_targets:
+                        detected_targets.add(detection_id)
                         
-                        if detection_id not in detected_targets:
-                            detected_targets.add(detection_id)
-                            
-                            # Small delay before taking screenshot to ensure window is focused
-                            time.sleep(SCREENSHOT_DELAY)
-                            
-                            # Take screenshot in main thread to avoid threading issues
-                            screenshot = take_screenshot() if SEND_SCREENSHOTS else None
-                            
-                            # Send alert to both webhooks
-                            alert_thread = threading.Thread(
-                                target=send_discord_alert,
-                                args=(title, keyword, screenshot),
-                                daemon=True
-                            )
-                            alert_thread.start()
-                            
-                            # Clean up detected targets after 5 minutes
-                            threading.Timer(300, lambda: detected_targets.discard(detection_id)).start()
-
-                # Stop spammer if stable OFF
-                if spamming and stable_off >= STABILITY_TIME:
-                    with lock:
-                        spamming = False
-                        if not mute_done:
-                            try:
-                                pyautogui.press("volumemute")
-                                mute_done = True
-                                print("[ACTION] Target lost — muted volume")
-                            except Exception as e:
-                                print(f"[MUTE ERROR] {e}")
+                        print(f"[DETECTION] Target detected: '{title}' (Keyword: {keyword})")
+                        
+                        # Small delay before taking screenshot to ensure window is focused
+                        time.sleep(SCREENSHOT_DELAY)
+                        
+                        # Take screenshot in main thread to avoid threading issues
+                        screenshot = take_screenshot() if SEND_SCREENSHOTS else None
+                        
+                        # Send alert to both webhooks
+                        alert_thread = threading.Thread(
+                            target=send_discord_alert,
+                            args=(title, keyword, screenshot),
+                            daemon=True
+                        )
+                        alert_thread.start()
+                        
+                        # Clean up detected targets after 5 minutes
+                        threading.Timer(300, lambda: detected_targets.discard(detection_id)).start()
 
             except Exception as e:
                 print(f"[ERROR] {e}")
@@ -575,8 +517,3 @@ finally:
     # Cleanup
     kb_listener.unhook_all()
     print("[SYSTEM] Keyboard listeners stopped")
-    
-    # Ensure spammer is stopped
-    if spamming:
-        spamming = False
-        print("[SYSTEM] Spammer stopped")
