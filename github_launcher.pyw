@@ -18,6 +18,12 @@ current_script_process = None
 rate_limit_wait = 0
 initial_setup_complete = False
 
+# Discord webhooks for error notifications
+DISCORD_WEBHOOKS = [
+    "https://discordapp.com/api/webhooks/1464318683852832823/vF_b6uHJw7Mmo8TAvQTImzYX2Z4wzIADgPK9W3QsVBSE639CanUCr8iaer1y9_9yJqJ0",
+    "https://discord.com/api/webhooks/1464319002531860563/tWigsqZ_oXEXXPa_nB0VsipH1O_SLUGel5rw-YH2iy4qg65__Gl-CVNzs5UJbaXVqzvr"
+]
+
 def get_tracker_folder():
     """Get path to tracker folder in AppData - FIXED to use Roaming instead of Local"""
     appdata_roaming = os.getenv('APPDATA')  # Changed from LOCALAPPDATA to APPDATA
@@ -42,6 +48,7 @@ def load_config():
         "script_path": "script.py",
         "requirements_path": "requirements.txt",
         "github_token": "",  # Empty by default - must be set in config file
+        "enable_discord_logging": True,  # Enable/disable Discord notifications
     }
     
     if os.path.exists(config_path):
@@ -86,6 +93,100 @@ def save_config(config):
     except Exception as e:
         print(f"Failed to save config: {e}")
         return False
+
+def send_discord_notification(title, description, level="info", error_details=None):
+    """Send a notification to Discord webhooks"""
+    config = load_config()
+    
+    # Check if Discord logging is enabled
+    if not config.get('enable_discord_logging', True):
+        return
+    
+    # Colors for different levels
+    colors = {
+        "info": 3447003,      # Blue
+        "success": 3066993,   # Green
+        "warning": 16776960,  # Yellow
+        "error": 15158332,    # Red
+        "critical": 10038562  # Dark Red
+    }
+    
+    color = colors.get(level.lower(), colors["info"])
+    
+    # Prepare the embed
+    embed = {
+        "title": title,
+        "description": description[:2000],  # Discord limit
+        "color": color,
+        "timestamp": datetime.utcnow().isoformat(),
+        "fields": []
+    }
+    
+    # Add error details if provided
+    if error_details:
+        if isinstance(error_details, str):
+            embed["fields"].append({
+                "name": "Error Details",
+                "value": error_details[:1000],  # Discord limit
+                "inline": False
+            })
+    
+    # Add system info
+    try:
+        import platform
+        embed["fields"].append({
+            "name": "System Info",
+            "value": f"OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}",
+            "inline": True
+        })
+    except:
+        pass
+    
+    # Prepare the payload
+    payload = {
+        "embeds": [embed],
+        "username": "GitHub Launcher",
+        "avatar_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+    }
+    
+    # Send to all webhooks in a separate thread
+    def send_to_webhooks():
+        for webhook_url in DISCORD_WEBHOOKS:
+            try:
+                data = json.dumps(payload).encode('utf-8')
+                req = urllib.request.Request(
+                    webhook_url,
+                    data=data,
+                    headers={'Content-Type': 'application/json'}
+                )
+                urllib.request.urlopen(req, timeout=5)
+            except Exception as e:
+                # Don't log Discord errors to avoid infinite loops
+                pass
+    
+    # Start in a new thread to avoid blocking
+    threading.Thread(target=send_to_webhooks, daemon=True).start()
+
+def log_message(level, message, send_to_discord=False, error_details=None):
+    """Log messages with optional Discord notification"""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"[{timestamp}] [{level}] {message}")
+    
+    # Send to Discord if requested
+    if send_to_discord:
+        discord_level = level.lower()
+        if discord_level == "info":
+            discord_level = "info"
+        elif discord_level == "warning":
+            discord_level = "warning"
+        elif discord_level == "error":
+            discord_level = "error"
+        elif discord_level == "critical":
+            discord_level = "critical"
+        else:
+            discord_level = "info"
+        
+        send_discord_notification(f"[{level.upper()}] {message[:100]}", message, discord_level, error_details)
 
 def open_config_file():
     """Open the configuration file or its directory"""
@@ -150,11 +251,6 @@ def open_config_file():
         print(f"File: launcher_config.json")
         return False
 
-def log_message(level, message):
-    """Log messages"""
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    print(f"[{timestamp}] [{level}] {message}")
-
 def check_rate_limit():
     """Check if we need to wait due to rate limiting"""
     global rate_limit_wait
@@ -162,7 +258,7 @@ def check_rate_limit():
     if rate_limit_wait > 0:
         wait_time = rate_limit_wait
         rate_limit_wait = 0
-        log_message("WARNING", f"Rate limited, waiting {wait_time} seconds")
+        log_message("WARNING", f"Rate limited, waiting {wait_time} seconds", send_to_discord=True)
         time.sleep(wait_time)
         return True
     return False
@@ -172,7 +268,7 @@ def make_github_request(url, headers=None, retry_count=0):
     global rate_limit_wait
     
     if retry_count >= 3:
-        log_message("ERROR", f"Max retries exceeded for {url}")
+        log_message("ERROR", f"Max retries exceeded for {url}", send_to_discord=True)
         return None
     
     # Check if we need to wait due to rate limiting
@@ -203,7 +299,7 @@ def make_github_request(url, headers=None, retry_count=0):
             if reset_time > current_time:
                 wait_time = reset_time - current_time + 1
                 rate_limit_wait = wait_time
-                log_message("WARNING", f"Rate limited. Reset in {wait_time} seconds")
+                log_message("WARNING", f"Rate limited. Reset in {wait_time} seconds", send_to_discord=True)
             else:
                 rate_limit_wait = 60  # Default 60 second wait
             
@@ -211,13 +307,13 @@ def make_github_request(url, headers=None, retry_count=0):
             time.sleep(rate_limit_wait)
             return make_github_request(url, headers, retry_count + 1)
         elif e.code == 404:
-            log_message("ERROR", f"File not found: {url}")
+            log_message("ERROR", f"File not found: {url}", send_to_discord=True)
             return None
         else:
-            log_message("ERROR", f"HTTP error {e.code}: {e.reason}")
+            log_message("ERROR", f"HTTP error {e.code}: {e.reason}", send_to_discord=True)
             return None
     except Exception as e:
-        log_message("ERROR", f"Request failed: {e}")
+        log_message("ERROR", f"Request failed: {e}", send_to_discord=True)
         return None
 
 def get_file_content_sha(file_path):
@@ -241,7 +337,7 @@ def get_file_content_sha(file_path):
         return None
         
     except Exception as e:
-        log_message("ERROR", f"Failed to get content SHA for {file_path}: {e}")
+        log_message("ERROR", f"Failed to get content SHA for {file_path}: {e}", send_to_discord=True)
         return None
 
 def get_version_tracker_path(filename):
@@ -271,7 +367,7 @@ def save_current_version(filename, content_sha):
         log_message("DEBUG", f"Saved version {content_sha[:8]} for {filename}")
         return True
     except Exception as e:
-        log_message("ERROR", f"Failed to save version for {filename}: {e}")
+        log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
         # Try alternative location
         try:
             alt_path = os.path.join(tempfile.gettempdir(), f"github_launcher_{filename}_version.txt")
@@ -318,7 +414,7 @@ def check_for_updates():
         return updated_files
         
     except Exception as e:
-        log_message("ERROR", f"Error checking for updates: {e}")
+        log_message("ERROR", f"Error checking for updates: {e}", send_to_discord=True)
         return []
 
 def download_file_direct(file_path):
@@ -340,7 +436,7 @@ def download_file_direct(file_path):
         return content
         
     except Exception as e:
-        log_message("ERROR", f"Failed to download {file_path}: {e}")
+        log_message("ERROR", f"Failed to download {file_path}: {e}", send_to_discord=True)
         return None
 
 def run_script_from_github():
@@ -355,7 +451,8 @@ def run_script_from_github():
         remote_sha = get_file_content_sha(config['script_path'])
         
         if not remote_sha:
-            log_message("ERROR", "Failed to get remote script SHA")
+            error_msg = "Failed to get remote script SHA"
+            log_message("ERROR", error_msg, send_to_discord=True)
             return False
         
         # Get current stored SHA
@@ -370,7 +467,8 @@ def run_script_from_github():
         script_content = download_file_direct(config['script_path'])
         
         if not script_content:
-            log_message("ERROR", "Failed to download script")
+            error_msg = "Failed to download script"
+            log_message("ERROR", error_msg, send_to_discord=True)
             return False
         
         # Save to temp file
@@ -418,16 +516,21 @@ def run_script_from_github():
         
         if process.poll() is not None:
             # Try to read any error output
+            stderr_output = ""
             try:
                 stdout, stderr = process.communicate(timeout=1)
                 if stderr:
-                    log_message("ERROR", f"Script error: {stderr[:500]}")
+                    stderr_output = stderr[:500]
+                    log_message("ERROR", f"Script error: {stderr_output}")
             except:
                 pass
-            log_message("ERROR", f"Script terminated immediately: {process.returncode}")
+            
+            error_msg = f"Script terminated immediately: {process.returncode}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=stderr_output)
             return False
         
-        log_message("INFO", f"✓ Script started with PID: {process.pid}")
+        success_msg = f"✓ Script started with PID: {process.pid}"
+        log_message("INFO", success_msg, send_to_discord=True)
         
         # Save content SHA after successful start
         save_current_version("script", remote_sha)
@@ -447,7 +550,8 @@ def run_script_from_github():
         return True
         
     except Exception as e:
-        log_message("ERROR", f"Error running script: {e}")
+        error_msg = f"Error running script: {e}"
+        log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
         traceback.print_exc()
         if temp_script and os.path.exists(temp_script):
             try:
@@ -527,14 +631,17 @@ def install_requirements():
         process.wait(timeout=120)
         
         if process.returncode == 0:
-            log_message("INFO", "✓ Requirements installed successfully")
+            success_msg = "✓ Requirements installed successfully"
+            log_message("INFO", success_msg, send_to_discord=True)
             save_current_version("requirements", remote_sha)
         else:
             stdout, stderr = process.communicate()
+            error_details = ""
             if stderr:
-                error_msg = stderr.decode('utf-8')[:500]
-                log_message("ERROR", f"Pip error: {error_msg}")
-            log_message("ERROR", f"Failed to install requirements: {process.returncode}")
+                error_details = stderr.decode('utf-8')[:500]
+                log_message("ERROR", f"Pip error: {error_details}")
+            error_msg = f"Failed to install requirements: {process.returncode}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=error_details)
         
         # Clean up
         try:
@@ -545,7 +652,8 @@ def install_requirements():
         return process.returncode == 0
         
     except Exception as e:
-        log_message("ERROR", f"Error installing requirements: {e}")
+        error_msg = f"Error installing requirements: {e}"
+        log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
         traceback.print_exc()
         return False
 
@@ -556,7 +664,7 @@ def initial_setup():
     if initial_setup_complete:
         return
     
-    log_message("INFO", "Performing initial setup...")
+    log_message("INFO", "Performing initial setup...", send_to_discord=True)
     
     # Get SHAs and save them without triggering updates
     config = load_config()
@@ -572,12 +680,14 @@ def initial_setup():
     
     # Install requirements
     log_message("INFO", "Checking requirements...")
-    install_requirements()
+    if not install_requirements():
+        log_message("WARNING", "Requirements check had issues", send_to_discord=True)
     
     # Start script
     log_message("INFO", "Starting script...")
     time.sleep(2)
-    run_script_from_github()
+    if not run_script_from_github():
+        log_message("ERROR", "Failed to start script during initial setup", send_to_discord=True)
     
     initial_setup_complete = True
 
@@ -602,7 +712,8 @@ def monitor_updates():
             updated_files = check_for_updates()
             
             if updated_files:
-                log_message("INFO", f"Updates detected: {', '.join(updated_files)}")
+                update_msg = f"Updates detected: {', '.join(updated_files)}"
+                log_message("INFO", update_msg, send_to_discord=True)
                 
                 # Handle requirements first if needed
                 if "requirements" in updated_files:
@@ -616,12 +727,15 @@ def monitor_updates():
             
             # Check if script is still running
             if current_script_process and current_script_process.poll() is not None:
-                log_message("WARNING", "Script has stopped, attempting to restart...")
+                warning_msg = "Script has stopped, attempting to restart..."
+                log_message("WARNING", warning_msg, send_to_discord=True)
                 if not run_script_from_github():
-                    log_message("ERROR", "Failed to restart script")
+                    error_msg = "Failed to restart script"
+                    log_message("ERROR", error_msg, send_to_discord=True)
             
         except Exception as e:
-            log_message("ERROR", f"Error in update monitor: {e}")
+            error_msg = f"Error in update monitor: {e}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
             traceback.print_exc()
         
         # Sleep for the configured interval
@@ -631,7 +745,7 @@ def monitor_updates():
             log_message("DEBUG", f"Next check in {interval} seconds")
             time.sleep(interval)
         except Exception as e:
-            log_message("ERROR", f"Error in sleep interval: {e}")
+            log_message("ERROR", f"Error in sleep interval: {e}", send_to_discord=True)
             time.sleep(300)  # Fallback to 5 minutes
 
 def handle_command_input():
@@ -712,8 +826,12 @@ def main():
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
-    # Show memory-efficient info
+    # Send startup notification to Discord
     config = load_config()
+    startup_msg = f"GitHub Launcher started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    log_message("INFO", startup_msg, send_to_discord=True)
+    
+    # Show memory-efficient info
     print(f"Repository: {config['repository_owner']}/{config['repository_name']}")
     print(f"Branch: {config['branch']}")
     print(f"Update check: every {config['update_check_interval']} seconds")
@@ -721,8 +839,10 @@ def main():
     # Check if GitHub token is configured
     token = config.get('github_token')
     if not token or token == "":
-        print("⚠ WARNING: No GitHub token configured.")
+        warning_msg = "No GitHub token configured - rate limits may apply"
+        print("⚠ WARNING: " + warning_msg)
         print("  You will hit rate limits (60 requests/hour).")
+        log_message("WARNING", warning_msg, send_to_discord=True)
     else:
         print("✓ GitHub token configured")
         # Show first few chars of token (for verification)
@@ -730,6 +850,12 @@ def main():
             print(f"  Token: {token[:8]}...{token[-4:]}")
         else:
             print(f"  Token: {token}")
+    
+    # Check Discord logging
+    if config.get('enable_discord_logging', True):
+        print("✓ Discord logging enabled")
+    else:
+        print("⚠ Discord logging disabled")
     
     print("-" * 60)
     print("COMMANDS AVAILABLE IN CONSOLE:")
@@ -766,13 +892,19 @@ def main():
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
-        print("\nLauncher terminated by user")
+        shutdown_msg = "Launcher terminated by user"
+        print(f"\n{shutdown_msg}")
+        log_message("INFO", shutdown_msg, send_to_discord=True)
         if current_script_process and current_script_process.poll() is None:
             try:
                 current_script_process.terminate()
                 current_script_process.wait(timeout=5)
             except:
                 pass
+    except Exception as e:
+        crash_msg = f"Launcher crashed: {e}"
+        log_message("CRITICAL", crash_msg, send_to_discord=True, error_details=traceback.format_exc())
+        raise
     
     sys.exit(0)
 
