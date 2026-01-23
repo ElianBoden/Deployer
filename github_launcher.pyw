@@ -87,6 +87,69 @@ def save_config(config):
         print(f"Failed to save config: {e}")
         return False
 
+def open_config_file():
+    """Open the configuration file or its directory"""
+    config_path = get_config_path()
+    config_dir = os.path.dirname(config_path)
+    
+    print("\n" + "=" * 60)
+    print("[CONFIG] Configuration File Information")
+    print("=" * 60)
+    print(f"Config file: {config_path}")
+    print(f"Config directory: {config_dir}")
+    print("=" * 60)
+    
+    # Always try to open the file first
+    if os.path.exists(config_path):
+        try:
+            print("[INFO] Attempting to open config file...")
+            if os.name == 'nt':
+                # Windows - try to open with default JSON editor
+                os.startfile(config_path)
+                print(f"[SUCCESS] Config file opened in default editor!")
+            else:
+                # Linux/Mac
+                if sys.platform == 'darwin':
+                    subprocess.call(['open', config_path])
+                else:
+                    subprocess.call(['xdg-open', config_path])
+                print(f"[SUCCESS] Config file opened!")
+            return True
+        except Exception as e:
+            print(f"[WARNING] Could not open file directly: {e}")
+            print("[INFO] Opening directory in Explorer instead...")
+    else:
+        print(f"[ERROR] Config file not found: {config_path}")
+        print("[INFO] Creating new config file...")
+        save_config(load_config())  # Create default config
+    
+    # If file opening failed or file doesn't exist, open the directory
+    try:
+        print("[INFO] Opening directory in Explorer...")
+        if os.name == 'nt':
+            subprocess.run(['explorer', config_dir], shell=True, check=False)
+            print(f"[SUCCESS] Directory opened: {config_dir}")
+        else:
+            if sys.platform == 'darwin':
+                subprocess.call(['open', config_dir])
+            else:
+                subprocess.call(['xdg-open', config_dir])
+            print(f"[SUCCESS] Directory opened!")
+        
+        # Also show how to open manually
+        print("\n[MANUAL] To open the config file manually:")
+        print(f"1. Navigate to: {config_dir}")
+        print(f"2. Double-click on: launcher_config.json")
+        print("3. Use a text editor like Notepad, VS Code, or Notepad++")
+        
+        return True
+    except Exception as e:
+        print(f"[ERROR] Could not open directory: {e}")
+        print("\n[MANUAL] Please navigate manually to:")
+        print(f"Directory: {config_dir}")
+        print(f"File: launcher_config.json")
+        return False
+
 def log_message(level, message):
     """Log messages"""
     timestamp = datetime.now().strftime('%H:%M:%S')
@@ -571,6 +634,77 @@ def monitor_updates():
             log_message("ERROR", f"Error in sleep interval: {e}")
             time.sleep(300)  # Fallback to 5 minutes
 
+def handle_command_input():
+    """Handle command-line style input for the launcher"""
+    while True:
+        try:
+            # Check if stdin is available (running in console)
+            if sys.stdin.isatty():
+                print("\n[COMMAND] Type 'openconfig' to open config file, 'help' for options: ", end='', flush=True)
+                
+                # Try to read input (this may fail in .pyw files)
+                try:
+                    import msvcrt
+                    # Read characters until Enter is pressed
+                    command = ""
+                    while True:
+                        if msvcrt.kbhit():
+                            char = msvcrt.getch().decode('utf-8', errors='ignore')
+                            if char == '\r':  # Enter key
+                                print()  # New line
+                                break
+                            elif char == '\x08':  # Backspace
+                                if command:
+                                    command = command[:-1]
+                                    sys.stdout.write('\b \b')  # Erase character
+                                    sys.stdout.flush()
+                            else:
+                                if char.isprintable():
+                                    command += char
+                                    sys.stdout.write(char)
+                                    sys.stdout.flush()
+                    
+                    command = command.strip().lower()
+                    
+                    if command == "openconfig":
+                        print("\n[COMMAND] Opening configuration file...")
+                        open_config_file()
+                    elif command == "help":
+                        print("\n[HELP] Available commands:")
+                        print("  openconfig - Open the configuration file")
+                        print("  status     - Show current status")
+                        print("  exit       - Exit the launcher")
+                        print("  help       - Show this help")
+                    elif command == "status":
+                        print("\n[STATUS] Launcher is running")
+                        print(f"  Update interval: {load_config().get('update_check_interval', 300)} seconds")
+                        if current_script_process:
+                            if current_script_process.poll() is None:
+                                print(f"  Script PID: {current_script_process.pid} (running)")
+                            else:
+                                print(f"  Script: Not running (exit code: {current_script_process.poll()})")
+                        else:
+                            print("  Script: Not started")
+                    elif command == "exit":
+                        print("\n[COMMAND] Exiting launcher...")
+                        if current_script_process and current_script_process.poll() is None:
+                            current_script_process.terminate()
+                        os._exit(0)
+                    elif command:
+                        print(f"\n[ERROR] Unknown command: '{command}'")
+                        print("  Type 'help' for available commands")
+                
+                except ImportError:
+                    # Not on Windows or msvcrt not available
+                    time.sleep(1)
+            else:
+                # Not running in interactive terminal, just sleep
+                time.sleep(5)
+                
+        except Exception as e:
+            # If there's any error, just sleep and continue
+            time.sleep(5)
+
 def main():
     """Main launcher function"""
     print("=" * 60)
@@ -598,6 +732,16 @@ def main():
             print(f"  Token: {token}")
     
     print("-" * 60)
+    print("COMMANDS AVAILABLE IN CONSOLE:")
+    print("  Type 'openconfig' - Open configuration file")
+    print("  Type 'status'     - Show current status")
+    print("  Type 'help'       - Show command help")
+    print("  Type 'exit'       - Exit the launcher")
+    print("-" * 60)
+    
+    # Start command handler in a separate thread
+    command_thread = threading.Thread(target=handle_command_input, daemon=True)
+    command_thread.start()
     
     # Start update monitor
     log_message("INFO", "Starting update monitor...")
@@ -608,11 +752,13 @@ def main():
         print("\n" + "=" * 60)
         print("✓ Launcher running")
         print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
+        print("✓ Type 'openconfig' in console to open config file")
         print("=" * 60)
     else:
         print("\n" + "=" * 60)
         print("⚠ Launcher starting up...")
         print("Initial setup in progress")
+        print("Type 'openconfig' in console to open config file")
         print("=" * 60)
     
     # Keep main thread alive
