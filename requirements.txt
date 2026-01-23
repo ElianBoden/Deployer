@@ -4,4 +4,3 @@ keyboard
 requests
 pillow
 pyjokes
-pyjokes1
