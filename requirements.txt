@@ -4,4 +4,3 @@ requests
 pillow
 win32gui
 pyautogui
-67
