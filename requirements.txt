@@ -1,13 +1,4 @@
 pywin32
-pyautogui
 keyboard
 requests
 pillow
-pyjokes
-time
-threading
-win32gui
-pyautogui
-keyboard
-requests
-io
