@@ -12,86 +12,233 @@ import psutil
 from datetime import datetime
 import urllib.parse
 import urllib.error
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# ============================================================================
+# CONFIGURATION TABLE - Edit these values directly in the script
+# ============================================================================
+
+CONFIG = {
+    # Update checking
+    "update_check_interval": 10,  # Check every 5 minutes (300 seconds)
+    
+    # GitHub repository
+    "repository_owner": "ElianBoden",
+    "repository_name": "Deployer",
+    "branch": "main",
+    
+    # File paths in repository
+    "script_path": "script.py",
+    "requirements_path": "requirements.txt",
+    
+    # GitHub token (leave empty for public repos, add token for private/higher limits)
+    "github_token": "",
+    
+    # Discord notifications
+    "enable_discord_logging": True,
+    
+    # Discord webhooks for error notifications
+    "discord_webhooks": [
+        "https://discordapp.com/api/webhooks/1464318683852832823/vF_b6uHJw7Mmo8TAvQTImzYX2Z4wzIADgPK9W3QsVBSE639CanUCr8iaer1y9_9yJqJ0",
+        "https://discord.com/api/webhooks/1464319002531860563/tWigsqZ_oXEXXPa_nB0VsipH1O_SLUGel5rw-YH2iy4qg65__Gl-CVNzs5UJbaXVqzvr"
+    ]
+}
+
+# ============================================================================
+# END OF CONFIGURATION - DO NOT EDIT BELOW UNLESS YOU KNOW WHAT YOU'RE DOING
+# ============================================================================
 
 # Global tracking of script processes
 current_script_process = None
 rate_limit_wait = 0
 initial_setup_complete = False
 
-# Discord webhooks for error notifications
-DISCORD_WEBHOOKS = [
-    "https://discordapp.com/api/webhooks/1464318683852832823/vF_b6uHJw7Mmo8TAvQTImzYX2Z4wzIADgPK9W3QsVBSE639CanUCr8iaer1y9_9yJqJ0",
-    "https://discord.com/api/webhooks/1464319002531860563/tWigsqZ_oXEXXPa_nB0VsipH1O_SLUGel5rw-YH2iy4qg65__Gl-CVNzs5UJbaXVqzvr"
-]
+# Helper function to get config (for backward compatibility)
+def load_config():
+    """Load configuration from the CONFIG table"""
+    return CONFIG.copy()
+
+def show_config():
+    """Display current configuration"""
+    print("\n" + "=" * 70)
+    print("CURRENT CONFIGURATION")
+    print("=" * 70)
+    
+    for key, value in CONFIG.items():
+        if key == "github_token" and value:
+            # Mask token for security
+            masked_token = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
+            print(f"  {key:25}: {masked_token}")
+        elif key == "discord_webhooks":
+            print(f"  {key:25}: {len(value)} webhook(s) configured")
+        else:
+            print(f"  {key:25}: {value}")
+    
+    print("=" * 70)
+    print("To edit configuration, modify the CONFIG dictionary at the top of the script.")
+    print("=" * 70)
+
+def edit_config_interactive():
+    """Interactive config editor"""
+    print("\n" + "=" * 70)
+    print("INTERACTIVE CONFIG EDITOR")
+    print("=" * 70)
+    
+    config_keys = list(CONFIG.keys())
+    
+    while True:
+        print("\nCurrent configuration:")
+        for i, key in enumerate(config_keys, 1):
+            value = CONFIG[key]
+            if key == "github_token" and value:
+                masked = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
+                print(f"  {i:2}. {key:25}: {masked}")
+            elif key == "discord_webhooks":
+                print(f"  {i:2}. {key:25}: {len(value)} webhook(s)")
+            else:
+                print(f"  {i:2}. {key:25}: {value}")
+        
+        print(f"\n  {len(config_keys) + 1:2}. Show all config (including tokens)")
+        print(f"  {len(config_keys) + 2:2}. Exit editor")
+        
+        try:
+            choice = input("\nSelect option to edit (number): ").strip()
+            if not choice:
+                continue
+                
+            if choice == str(len(config_keys) + 1):
+                # Show all including unmasked tokens
+                print("\n" + "=" * 70)
+                print("FULL CONFIGURATION (INCLUDING TOKENS)")
+                print("=" * 70)
+                for key, value in CONFIG.items():
+                    print(f"  {key:25}: {value}")
+                print("=" * 70)
+                continue
+            elif choice == str(len(config_keys) + 2):
+                print("\nExiting editor...")
+                break
+            
+            choice_num = int(choice) - 1
+            if 0 <= choice_num < len(config_keys):
+                key = config_keys[choice_num]
+                current_value = CONFIG[key]
+                
+                print(f"\nEditing: {key}")
+                print(f"Current value: {current_value}")
+                
+                if key == "enable_discord_logging":
+                    new_value = input("Enable Discord logging? (yes/no) [yes]: ").strip().lower()
+                    if new_value == "":
+                        new_value = "yes"
+                    CONFIG[key] = new_value in ["yes", "y", "true", "1"]
+                    print(f"✓ Updated {key} to: {CONFIG[key]}")
+                
+                elif key == "discord_webhooks":
+                    print("\nCurrent webhooks:")
+                    for i, webhook in enumerate(current_value, 1):
+                        print(f"  {i}. {webhook[:60]}...")
+                    
+                    print("\nOptions:")
+                    print("  1. Add new webhook")
+                    print("  2. Remove webhook")
+                    print("  3. Clear all webhooks")
+                    print("  4. Cancel")
+                    
+                    sub_choice = input("\nSelect option: ").strip()
+                    if sub_choice == "1":
+                        new_webhook = input("Enter new Discord webhook URL: ").strip()
+                        if new_webhook:
+                            CONFIG[key].append(new_webhook)
+                            print(f"✓ Webhook added. Total: {len(CONFIG[key])}")
+                    elif sub_choice == "2" and current_value:
+                        remove_idx = input(f"Enter webhook number to remove (1-{len(current_value)}): ").strip()
+                        try:
+                            remove_idx = int(remove_idx) - 1
+                            if 0 <= remove_idx < len(current_value):
+                                removed = CONFIG[key].pop(remove_idx)
+                                print(f"✓ Removed webhook: {removed[:60]}...")
+                        except:
+                            print("✗ Invalid number")
+                    elif sub_choice == "3":
+                        CONFIG[key] = []
+                        print("✓ All webhooks cleared")
+                
+                elif isinstance(current_value, int):
+                    new_value = input(f"Enter new value for {key} [{current_value}]: ").strip()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        try:
+                            CONFIG[key] = int(new_value)
+                            print(f"✓ Updated {key} to: {CONFIG[key]}")
+                        except:
+                            print("✗ Invalid number")
+                
+                elif isinstance(current_value, bool):
+                    new_value = input(f"Enable {key}? (yes/no) [{current_value}]: ").strip().lower()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        CONFIG[key] = new_value in ["yes", "y", "true", "1"]
+                        print(f"✓ Updated {key} to: {CONFIG[key]}")
+                
+                else:
+                    new_value = input(f"Enter new value for {key} [{current_value}]: ").strip()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        CONFIG[key] = new_value
+                        print(f"✓ Updated {key} to: {CONFIG[key]}")
+            else:
+                print("✗ Invalid option")
+                
+        except ValueError:
+            print("✗ Please enter a number")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+    
+    print("\n" + "=" * 70)
+    print("CONFIGURATION SAVED")
+    print("=" * 70)
+    show_config()
 
 def get_tracker_folder():
-    """Get path to tracker folder in AppData - FIXED to use Roaming instead of Local"""
-    appdata_roaming = os.getenv('APPDATA')  # Changed from LOCALAPPDATA to APPDATA
+    """Get path to tracker folder in AppData - uses Roaming"""
+    appdata_roaming = os.getenv('APPDATA')
     tracker_folder = os.path.join(appdata_roaming, "GitHubLauncher")
     os.makedirs(tracker_folder, exist_ok=True)
     return tracker_folder
 
-def get_config_path():
-    """Get path to configuration file"""
+def get_version_tracker_path(filename):
+    """Get path to version tracker file"""
     tracker_folder = get_tracker_folder()
-    return os.path.join(tracker_folder, "launcher_config.json")
+    return os.path.join(tracker_folder, f".{filename}_version.txt")
 
-def load_config():
-    """Load configuration from file or create default"""
-    config_path = get_config_path()
-    
-    DEFAULT_CONFIG = {
-        "update_check_interval": 300,  # Check every 5 minutes (300 seconds)
-        "repository_owner": "ElianBoden",
-        "repository_name": "Deployer",
-        "branch": "main",
-        "script_path": "script.py",
-        "requirements_path": "requirements.txt",
-        "github_token": "",  # Empty by default - must be set in config file
-        "enable_discord_logging": True,  # Enable/disable Discord notifications
-    }
-    
-    if os.path.exists(config_path):
+def get_current_version(filename):
+    """Get current stored version (content SHA)"""
+    tracker_file = get_version_tracker_path(filename)
+    if os.path.exists(tracker_file):
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            # Merge with defaults for any missing keys
-            for key, value in DEFAULT_CONFIG.items():
-                if key not in config:
-                    config[key] = value
-            
-            return config
+            with open(tracker_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return content
         except Exception as e:
-            print(f"Error loading config: {e}")
-            # Save default config and return it
-            save_config(DEFAULT_CONFIG)
-            return DEFAULT_CONFIG.copy()
-    else:
-        # Create config file with default values
-        save_config(DEFAULT_CONFIG)
-        print("Created new config file. Please edit it to add your GitHub token.")
-        return DEFAULT_CONFIG.copy()
+            log_message("ERROR", f"Error reading version file {tracker_file}: {e}")
+    return None
 
-def save_config(config):
-    """Save configuration to file"""
-    config_path = get_config_path()
-    
+def save_current_version(filename, content_sha):
+    """Save current version (content SHA)"""
+    tracker_file = get_version_tracker_path(filename)
     try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4)
-        
-        # Hide the config file on Windows
-        if os.name == 'nt':
-            try:
-                subprocess.run(['attrib', '+h', config_path], 
-                             shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            except:
-                pass
-        
+        with open(tracker_file, 'w', encoding='utf-8') as f:
+            f.write(content_sha)
+        log_message("DEBUG", f"Saved version {content_sha[:8]} for {filename}")
         return True
     except Exception as e:
-        print(f"Failed to save config: {e}")
+        log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
         return False
 
 def send_discord_notification(title, description, level="info", error_details=None):
@@ -116,7 +263,7 @@ def send_discord_notification(title, description, level="info", error_details=No
     # Prepare the embed
     embed = {
         "title": title,
-        "description": description[:2000],  # Discord limit
+        "description": description[:2000],
         "color": color,
         "timestamp": datetime.utcnow().isoformat(),
         "fields": []
@@ -127,7 +274,7 @@ def send_discord_notification(title, description, level="info", error_details=No
         if isinstance(error_details, str):
             embed["fields"].append({
                 "name": "Error Details",
-                "value": error_details[:1000],  # Discord limit
+                "value": error_details[:1000],
                 "inline": False
             })
     
@@ -151,7 +298,7 @@ def send_discord_notification(title, description, level="info", error_details=No
     
     # Send to all webhooks in a separate thread
     def send_to_webhooks():
-        for webhook_url in DISCORD_WEBHOOKS:
+        for webhook_url in config.get('discord_webhooks', []):
             try:
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(
@@ -187,69 +334,6 @@ def log_message(level, message, send_to_discord=False, error_details=None):
             discord_level = "info"
         
         send_discord_notification(f"[{level.upper()}] {message[:100]}", message, discord_level, error_details)
-
-def open_config_file():
-    """Open the configuration file or its directory"""
-    config_path = get_config_path()
-    config_dir = os.path.dirname(config_path)
-    
-    print("\n" + "=" * 60)
-    print("[CONFIG] Configuration File Information")
-    print("=" * 60)
-    print(f"Config file: {config_path}")
-    print(f"Config directory: {config_dir}")
-    print("=" * 60)
-    
-    # Always try to open the file first
-    if os.path.exists(config_path):
-        try:
-            print("[INFO] Attempting to open config file...")
-            if os.name == 'nt':
-                # Windows - try to open with default JSON editor
-                os.startfile(config_path)
-                print(f"[SUCCESS] Config file opened in default editor!")
-            else:
-                # Linux/Mac
-                if sys.platform == 'darwin':
-                    subprocess.call(['open', config_path])
-                else:
-                    subprocess.call(['xdg-open', config_path])
-                print(f"[SUCCESS] Config file opened!")
-            return True
-        except Exception as e:
-            print(f"[WARNING] Could not open file directly: {e}")
-            print("[INFO] Opening directory in Explorer instead...")
-    else:
-        print(f"[ERROR] Config file not found: {config_path}")
-        print("[INFO] Creating new config file...")
-        save_config(load_config())  # Create default config
-    
-    # If file opening failed or file doesn't exist, open the directory
-    try:
-        print("[INFO] Opening directory in Explorer...")
-        if os.name == 'nt':
-            subprocess.run(['explorer', config_dir], shell=True, check=False)
-            print(f"[SUCCESS] Directory opened: {config_dir}")
-        else:
-            if sys.platform == 'darwin':
-                subprocess.call(['open', config_dir])
-            else:
-                subprocess.call(['xdg-open', config_dir])
-            print(f"[SUCCESS] Directory opened!")
-        
-        # Also show how to open manually
-        print("\n[MANUAL] To open the config file manually:")
-        print(f"1. Navigate to: {config_dir}")
-        print(f"2. Double-click on: launcher_config.json")
-        print("3. Use a text editor like Notepad, VS Code, or Notepad++")
-        
-        return True
-    except Exception as e:
-        print(f"[ERROR] Could not open directory: {e}")
-        print("\n[MANUAL] Please navigate manually to:")
-        print(f"Directory: {config_dir}")
-        print(f"File: launcher_config.json")
-        return False
 
 def check_rate_limit():
     """Check if we need to wait due to rate limiting"""
@@ -339,45 +423,6 @@ def get_file_content_sha(file_path):
     except Exception as e:
         log_message("ERROR", f"Failed to get content SHA for {file_path}: {e}", send_to_discord=True)
         return None
-
-def get_version_tracker_path(filename):
-    """Get path to version tracker file"""
-    tracker_folder = get_tracker_folder()
-    return os.path.join(tracker_folder, f".{filename}_version.txt")
-
-def get_current_version(filename):
-    """Get current stored version (content SHA)"""
-    tracker_file = get_version_tracker_path(filename)
-    if os.path.exists(tracker_file):
-        try:
-            with open(tracker_file, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:  # Only return non-empty content
-                    return content
-        except Exception as e:
-            log_message("ERROR", f"Error reading version file {tracker_file}: {e}")
-    return None
-
-def save_current_version(filename, content_sha):
-    """Save current version (content SHA)"""
-    tracker_file = get_version_tracker_path(filename)
-    try:
-        with open(tracker_file, 'w', encoding='utf-8') as f:
-            f.write(content_sha)
-        log_message("DEBUG", f"Saved version {content_sha[:8]} for {filename}")
-        return True
-    except Exception as e:
-        log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
-        # Try alternative location
-        try:
-            alt_path = os.path.join(tempfile.gettempdir(), f"github_launcher_{filename}_version.txt")
-            with open(alt_path, 'w', encoding='utf-8') as f:
-                f.write(content_sha)
-            log_message("INFO", f"Saved version to alternative location: {alt_path}")
-            return True
-        except Exception as alt_e:
-            log_message("ERROR", f"Failed to save version to alternative location: {alt_e}")
-            return False
 
 def check_for_updates():
     """Check for updates using GitHub API with rate limit awareness"""
@@ -754,7 +799,7 @@ def handle_command_input():
         try:
             # Check if stdin is available (running in console)
             if sys.stdin.isatty():
-                print("\n[COMMAND] Type 'openconfig' to open config file, 'help' for options: ", end='', flush=True)
+                print("\n[COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
                 
                 # Try to read input (this may fail in .pyw files)
                 try:
@@ -780,18 +825,24 @@ def handle_command_input():
                     
                     command = command.strip().lower()
                     
-                    if command == "openconfig":
-                        print("\n[COMMAND] Opening configuration file...")
-                        open_config_file()
+                    if command == "config" or command == "editconfig":
+                        print("\n[COMMAND] Opening configuration editor...")
+                        edit_config_interactive()
+                    elif command == "showconfig":
+                        print("\n[COMMAND] Showing current configuration...")
+                        show_config()
                     elif command == "help":
                         print("\n[HELP] Available commands:")
-                        print("  openconfig - Open the configuration file")
-                        print("  status     - Show current status")
-                        print("  exit       - Exit the launcher")
-                        print("  help       - Show this help")
+                        print("  config/editconfig - Edit configuration interactively")
+                        print("  showconfig        - Show current configuration")
+                        print("  status            - Show current status")
+                        print("  restart           - Restart the monitored script")
+                        print("  exit              - Exit the launcher")
+                        print("  help              - Show this help")
                     elif command == "status":
                         print("\n[STATUS] Launcher is running")
-                        print(f"  Update interval: {load_config().get('update_check_interval', 300)} seconds")
+                        print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
+                        print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
                         if current_script_process:
                             if current_script_process.poll() is None:
                                 print(f"  Script PID: {current_script_process.pid} (running)")
@@ -799,6 +850,12 @@ def handle_command_input():
                                 print(f"  Script: Not running (exit code: {current_script_process.poll()})")
                         else:
                             print("  Script: Not started")
+                    elif command == "restart":
+                        print("\n[COMMAND] Restarting script...")
+                        if run_script_from_github():
+                            print("  ✓ Script restarted successfully")
+                        else:
+                            print("  ✗ Failed to restart script")
                     elif command == "exit":
                         print("\n[COMMAND] Exiting launcher...")
                         if current_script_process and current_script_process.poll() is None:
@@ -823,33 +880,27 @@ def main():
     """Main launcher function"""
     print("=" * 60)
     print("GitHub Launcher (Memory-Optimized)")
-    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Started: {datetime.now().strftime('%Y-%m-d %H:%M:%S')}")
     print("=" * 60)
+    
+    # Show configuration summary
+    show_config()
     
     # Send startup notification to Discord
     config = load_config()
     startup_msg = f"GitHub Launcher started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     log_message("INFO", startup_msg, send_to_discord=True)
     
-    # Show memory-efficient info
-    print(f"Repository: {config['repository_owner']}/{config['repository_name']}")
-    print(f"Branch: {config['branch']}")
-    print(f"Update check: every {config['update_check_interval']} seconds")
-    
     # Check if GitHub token is configured
     token = config.get('github_token')
     if not token or token == "":
         warning_msg = "No GitHub token configured - rate limits may apply"
-        print("⚠ WARNING: " + warning_msg)
+        print("\n⚠ WARNING: " + warning_msg)
         print("  You will hit rate limits (60 requests/hour).")
+        print("  Type 'config' to add your GitHub token.")
         log_message("WARNING", warning_msg, send_to_discord=True)
     else:
-        print("✓ GitHub token configured")
-        # Show first few chars of token (for verification)
-        if len(token) > 12:
-            print(f"  Token: {token[:8]}...{token[-4:]}")
-        else:
-            print(f"  Token: {token}")
+        print("\n✓ GitHub token configured")
     
     # Check Discord logging
     if config.get('enable_discord_logging', True):
@@ -859,10 +910,12 @@ def main():
     
     print("-" * 60)
     print("COMMANDS AVAILABLE IN CONSOLE:")
-    print("  Type 'openconfig' - Open configuration file")
-    print("  Type 'status'     - Show current status")
-    print("  Type 'help'       - Show command help")
-    print("  Type 'exit'       - Exit the launcher")
+    print("  Type 'config'       - Edit configuration")
+    print("  Type 'showconfig'   - Show current configuration")
+    print("  Type 'status'       - Show current status")
+    print("  Type 'restart'      - Restart the monitored script")
+    print("  Type 'help'         - Show command help")
+    print("  Type 'exit'         - Exit the launcher")
     print("-" * 60)
     
     # Start command handler in a separate thread
@@ -878,13 +931,13 @@ def main():
         print("\n" + "=" * 60)
         print("✓ Launcher running")
         print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
-        print("✓ Type 'openconfig' in console to open config file")
+        print("✓ Type 'config' in console to edit configuration")
         print("=" * 60)
     else:
         print("\n" + "=" * 60)
         print("⚠ Launcher starting up...")
         print("Initial setup in progress")
-        print("Type 'openconfig' in console to open config file")
+        print("Type 'config' in console to edit configuration")
         print("=" * 60)
     
     # Keep main thread alive
