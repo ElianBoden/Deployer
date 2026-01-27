@@ -4,5 +4,4 @@ requests
 pillow
 win32gui
 pyautogui
-numpy
 opencv-python
