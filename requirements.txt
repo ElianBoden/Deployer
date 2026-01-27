@@ -1,5 +1,6 @@
+pywin32
 keyboard
 requests
-opencv-python
-numpy
-Pillow
+pillow
+win32gui
+pyautogui
