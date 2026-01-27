@@ -29,8 +29,8 @@ def create_popup():
     root.attributes('-topmost', True)
     
     # Set window size and position
-    window_width = 400
-    window_height = 150
+    window_width = 800
+    window_height = 300
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     
