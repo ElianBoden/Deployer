@@ -56,7 +56,7 @@ def main():
     animation_active = True
     shake_offset_x = 0
     shake_offset_y = 0
-    pulse_scale = 1.0
+    pulse_scale = 5.0
     animation_time = 0
     full_screen_image = None
     full_screen_photo = None
