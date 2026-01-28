@@ -6,6 +6,7 @@ import random
 import time
 import threading
 import math
+from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
 
 def main():
     # Create the main window
@@ -36,8 +37,13 @@ def main():
     # Store the original background color for flicker effect
     original_bg = '#000000'
     
+    # Store original and modified images
+    original_photo = None
+    flicker_images = []  # Different versions for flickering
+    current_image_label = None
+    image_label = None  # Main image label
+    
     # Try to load and display the image
-    photo = None  # Keep reference to prevent garbage collection
     try:
         # Use a different, scarier image from Unsplash
         # This is a dark, eerie forest image
@@ -49,7 +55,6 @@ def main():
                 image_data = response.read()
             
             # Convert to PhotoImage
-            from PIL import Image, ImageTk, ImageEnhance
             import io
             
             # Load image
@@ -75,13 +80,63 @@ def main():
             # Resize image to fill the window completely
             image = image.resize((window_width, window_height), Image.Resampling.LANCZOS)
             
-            # Convert to PhotoImage
-            photo = ImageTk.PhotoImage(image)
+            # Create different versions for flickering
+            # 1. Original (slightly darker)
+            original_image = image.copy()
+            
+            # 2. Bright red tint
+            red_image = image.copy()
+            r, g, b = red_image.split()
+            r = r.point(lambda i: min(i * 1.8, 255))
+            g = g.point(lambda i: i * 0.4)
+            b = b.point(lambda i: i * 0.4)
+            red_image = Image.merge('RGB', (r, g, b))
+            
+            # 3. High contrast black and white with red tint
+            bw_image = image.copy().convert('L')
+            bw_image = ImageEnhance.Contrast(bw_image).enhance(3.0)
+            bw_image = bw_image.convert('RGB')
+            r, g, b = bw_image.split()
+            r = r.point(lambda i: min(i * 1.5, 255))
+            bw_image = Image.merge('RGB', (r, g, b))
+            
+            # 4. Dark version (almost black)
+            dark_image = ImageEnhance.Brightness(image).enhance(0.2)
+            
+            # 5. Inverted colors
+            inverted_image = ImageOps.invert(image)
+            r, g, b = inverted_image.split()
+            g = g.point(lambda i: i * 0.3)
+            b = b.point(lambda i: i * 0.3)
+            inverted_image = Image.merge('RGB', (r, g, b))
+            
+            # 6. Blurred version
+            blurred_image = image.filter(ImageFilter.GaussianBlur(radius=3))
+            
+            # 7. Extra red version
+            extra_red_image = image.copy()
+            r, g, b = extra_red_image.split()
+            r = r.point(lambda i: min(i * 2.0, 255))
+            g = g.point(lambda i: i * 0.2)
+            b = b.point(lambda i: i * 0.2)
+            extra_red_image = Image.merge('RGB', (r, g, b))
+            
+            # Convert all to PhotoImage
+            original_photo = ImageTk.PhotoImage(original_image)
+            flicker_images = [
+                ImageTk.PhotoImage(red_image),
+                ImageTk.PhotoImage(bw_image),
+                ImageTk.PhotoImage(dark_image),
+                ImageTk.PhotoImage(inverted_image),
+                ImageTk.PhotoImage(blurred_image),
+                ImageTk.PhotoImage(extra_red_image)
+            ]
             
             # Create label to display image (fills entire window)
-            image_label = tk.Label(window, image=photo, bg="#000000")
-            image_label.image = photo  # Keep reference
+            image_label = tk.Label(window, image=original_photo, bg="#000000")
+            image_label.image = original_photo  # Keep reference
             image_label.place(x=0, y=0, width=window_width, height=window_height)
+            current_image_label = image_label
             
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Scary image loaded and displayed")
             
@@ -94,32 +149,69 @@ def main():
     # Track active canvases to prevent interference
     active_canvases = []
     
-    # INTENSE FLICKER EFFECT - MORE DRAMATIC
-    def intense_flicker():
+    # IMAGE FLICKER EFFECT - Now flickers the image itself
+    def image_flicker_effect():
         try:
+            if window.winfo_exists() and image_label and flicker_images:
+                # Randomly select a flicker image
+                flicker_image = random.choice(flicker_images)
+                
+                # Change the image label to show flicker version
+                image_label.config(image=flicker_image)
+                image_label.image = flicker_image  # Keep reference
+                
+                # Random flicker duration (very short for strobe effect)
+                flicker_duration = random.randint(30, 120)
+                
+                # Return to original image after flicker duration
+                window.after(flicker_duration, return_to_original_image)
+                
+                # Schedule next flicker with random interval
+                next_flicker = random.randint(50, 300)
+                window.after(next_flicker, image_flicker_effect)
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [ERROR] Image flicker failed: {e}")
+            # Try to continue flickering anyway
             if window.winfo_exists():
-                # More varied and intense colors
-                colors = ['#000000', '#330000', '#660000', '#990000', '#CC0000', '#FF0000']
-                flicker_color = random.choice(colors)
-                
-                # Create a semi-transparent overlay for flicker
-                flicker_canvas = tk.Canvas(window, bg='', highlightthickness=0)
-                flicker_canvas.place(x=0, y=0, width=window_width, height=window_height)
-                flicker_canvas.create_rectangle(0, 0, window_width, window_height, 
-                                               fill=flicker_color, outline='', stipple='gray50')
-                active_canvases.append(flicker_canvas)
-                
-                # Remove after very short time for strobe effect
-                window.after(random.randint(30, 100), 
-                           lambda fc=flicker_canvas: remove_canvas(fc))
-                
-                # Schedule next flicker
-                window.after(random.randint(50, 200), intense_flicker)
+                window.after(100, image_flicker_effect)
+    
+    def return_to_original_image():
+        try:
+            if window.winfo_exists() and image_label and original_photo:
+                image_label.config(image=original_photo)
+                image_label.image = original_photo
         except:
             pass
     
-    # Start intense flicker
-    intense_flicker()
+    # Start image flicker effect
+    if image_label and flicker_images:
+        window.after(500, image_flicker_effect)
+    else:
+        # Fallback to canvas flicker if no image
+        def intense_flicker():
+            try:
+                if window.winfo_exists():
+                    # More varied and intense colors
+                    colors = ['#000000', '#330000', '#660000', '#990000', '#CC0000', '#FF0000']
+                    flicker_color = random.choice(colors)
+                    
+                    # Create a semi-transparent overlay for flicker
+                    flicker_canvas = tk.Canvas(window, bg='', highlightthickness=0)
+                    flicker_canvas.place(x=0, y=0, width=window_width, height=window_height)
+                    flicker_canvas.create_rectangle(0, 0, window_width, window_height, 
+                                                   fill=flicker_color, outline='', stipple='gray50')
+                    active_canvases.append(flicker_canvas)
+                    
+                    # Remove after very short time for strobe effect
+                    window.after(random.randint(30, 100), 
+                               lambda fc=flicker_canvas: remove_canvas(fc))
+                    
+                    # Schedule next flicker
+                    window.after(random.randint(50, 200), intense_flicker)
+            except:
+                pass
+        
+        intense_flicker()
     
     # IMPROVED EYE EFFECT WITH MOVEMENT AND BLINKING
     class ScaryEye:
@@ -360,13 +452,6 @@ def main():
                     text_canvas.create_text(x, y, text=message, 
                                            fill='#FF0000', font=('Arial', random.randint(20, 40), 'bold'))
                 
-                # Fade out effect
-                def fade_out(canvas, alpha=1.0):
-                    if canvas.winfo_exists() and alpha > 0:
-                        # This is a simplified fade - Tkinter doesn't support real alpha on canvas items
-                        # We'll just remove it after delay
-                        window.after(50, lambda: fade_out(canvas, alpha-0.1))
-                
                 # Remove after delay
                 window.after(random.randint(1000, 3000), 
                            lambda tc=text_canvas: remove_canvas(tc))
@@ -380,55 +465,34 @@ def main():
     # Start text effects after delay
     window.after(2000, scary_text_effect)
     
-    # PULSATING EFFECT
-    def pulsing_effect():
+    # IMAGE DISTORTION EFFECT
+    def image_distortion_effect():
         try:
-            if window.winfo_exists():
-                # Create pulsing overlay
-                pulse_canvas = tk.Canvas(window, bg='', highlightthickness=0)
-                pulse_canvas.place(x=0, y=0, width=window_width, height=window_height)
-                active_canvases.append(pulse_canvas)
-                
-                # Create pulsing circle
-                center_x = window_width // 2
-                center_y = window_height // 2
-                max_radius = min(window_width, window_height) // 2
-                
-                def pulse(radius=10, growing=True):
-                    if not pulse_canvas.winfo_exists():
-                        return
+            if window.winfo_exists() and image_label and original_photo:
+                # Create a temporary distorted version of the image
+                if flicker_images:
+                    # Pick a random distortion
+                    distortion_type = random.choice(['red_flash', 'blur', 'invert'])
                     
-                    # Clear previous pulse
-                    pulse_canvas.delete('all')
+                    if distortion_type == 'red_flash':
+                        image_label.config(image=flicker_images[0])  # Red version
+                    elif distortion_type == 'blur':
+                        image_label.config(image=flicker_images[4])  # Blurred version
+                    elif distortion_type == 'invert':
+                        image_label.config(image=flicker_images[3])  # Inverted version
                     
-                    # Draw new pulse
-                    pulse_canvas.create_oval(center_x-radius, center_y-radius,
-                                            center_x+radius, center_y+radius,
-                                            outline='#FF0000', width=2, stipple='gray50')
-                    
-                    if growing:
-                        radius += 10
-                        if radius > max_radius:
-                            growing = False
-                    else:
-                        radius -= 10
-                        if radius < 10:
-                            remove_canvas(pulse_canvas)
-                            return
-                    
-                    window.after(50, lambda: pulse(radius, growing))
-                
-                # Start pulse
-                pulse()
+                    # Keep distortion for a moment
+                    window.after(random.randint(80, 200), return_to_original_image)
         except:
             pass
         
-        # Schedule next pulse
+        # Schedule next distortion
         if window.winfo_exists():
-            window.after(random.randint(5000, 10000), pulsing_effect)
+            window.after(random.randint(1000, 3000), image_distortion_effect)
     
-    # Start pulsing effect
-    window.after(3000, pulsing_effect)
+    # Start image distortion effect
+    if image_label and flicker_images:
+        window.after(2500, image_distortion_effect)
     
     # BLOOD DRIP EFFECT
     def blood_drip_effect():
@@ -490,30 +554,28 @@ def main():
     # Add low-frequency ominous hum (simulated with console message)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Playing ominous frequency: 13Hz...")
     
-    # INTENSE CLOSE EFFECT
+    # INTENSE CLOSE EFFECT WITH IMAGE FLICKER
     def close_window():
-        # Add intense closing sequence
+        # Add intense closing sequence with rapid image flickering
         try:
             if window.winfo_exists():
-                # Create final effect canvas
-                final_canvas = tk.Canvas(window, bg='', highlightthickness=0)
-                final_canvas.place(x=0, y=0, width=window_width, height=window_height)
-                
-                def flash_sequence(step=0):
-                    if not final_canvas.winfo_exists():
+                def final_flicker_sequence(count=0):
+                    if count >= 15:  # Flicker 15 times before closing
+                        final_destroy()
                         return
                     
-                    colors = ['#FF0000', '#000000', '#8B0000', '#000000', '#FF0000', '#000000']
-                    if step < len(colors):
-                        window.configure(bg=colors[step])
-                        window.after(100, lambda: flash_sequence(step+1))
-                    else:
-                        # Final red screen
-                        window.configure(bg='#FF0000')
-                        window.after(200, final_destroy)
+                    # Rapid flicker between original and red version
+                    if image_label and flicker_images:
+                        if count % 2 == 0:
+                            image_label.config(image=flicker_images[0])  # Red version
+                        else:
+                            image_label.config(image=original_photo)
+                    
+                    # Schedule next flicker
+                    window.after(80, lambda: final_flicker_sequence(count + 1))
                 
-                # Start flash sequence
-                flash_sequence()
+                # Start final flicker sequence
+                final_flicker_sequence()
         except:
             final_destroy()
     
@@ -537,7 +599,7 @@ def main():
     
     # Print to console
     current_time = datetime.now().strftime('%H:%M:%S')
-    print(f"[{current_time}] [INFO] SCARY WINDOW ACTIVATED - ENHANCED VERSION")
+    print(f"[{current_time}] [INFO] SCARY WINDOW ACTIVATED - IMAGE FLICKER VERSION")
     print(f"[{current_time}] [INFO] Screen size: {screen_width}x{screen_height}")
     print(f"[{current_time}] [INFO] Window size: {window_width}x{window_height}")
     print(f"[{current_time}] [INFO] Window will close in 15 seconds")
@@ -561,12 +623,12 @@ if __name__ == "__main__":
     try:
         # Try to import required modules
         try:
-            from PIL import Image, ImageTk, ImageEnhance
+            from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
         except ImportError:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Installing Pillow...")
             import subprocess
             subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow", "--quiet"])
-            from PIL import Image, ImageTk, ImageEnhance
+            from PIL import Image, ImageTk, ImageEnhance, ImageFilter, ImageOps
         
         main()
         sys.exit(0)
