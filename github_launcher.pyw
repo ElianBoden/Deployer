@@ -1,5 +1,4 @@
 # github_launcher.pyw - Memory-optimized using GitHub API for version checking
-
 import os
 import sys
 import subprocess
