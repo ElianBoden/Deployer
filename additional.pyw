@@ -137,7 +137,7 @@ def main():
             window.destroy()
     
     # Start countdown
-    update_countdown(5)
+    update_countdown(10)
     
     # Print to console
     current_time = datetime.now().strftime('%H:%M:%S')
