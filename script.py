@@ -109,7 +109,7 @@ DISCORD_WEBHOOKS = [
 ]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
 SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
-PERIODIC_SCREENSHOT_INTERVAL = 30  # Take screenshot every 30 seconds (even without detection)
+PERIODIC_SCREENSHOT_INTERVAL = 45  # Take screenshot every 30 seconds (even without detection)
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
 # ---------------- GLOBALS ---------------- #
