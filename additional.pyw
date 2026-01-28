@@ -1,3 +1,4 @@
+
 # additional.pyw - Scary full-screen image display (Configurable)
 import tkinter as tk
 import urllib.request
