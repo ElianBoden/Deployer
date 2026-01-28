@@ -15,6 +15,8 @@ import urllib.error
 import ssl
 import queue
 import atexit
+import base64
+import hashlib
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ============================================================================
@@ -52,6 +54,15 @@ CONFIG = {
     "max_cpu_percent": 5.0,      # Warning threshold for CPU usage
     "min_update_interval": 15,   # Minimum time between update checks (seconds) - NOTE: This overrides update_check_interval if smaller
     "command_poll_interval": 5,  # Check for commands every 5 seconds
+    
+    # Byte verification settings
+    "enable_byte_verification": False,  # Enable byte size verification
+    "byte_verification_retries": 10,    # Number of times to retry if byte size doesn't change
+    "byte_verification_delay": 10,     # Delay between byte verification retries (seconds)
+    
+    # Cache control
+    "enable_cache_control": True,       # Add cache-control headers to bypass CDN
+    "cache_busting": True,              # Add cache-busting query parameters
 }
 
 # ============================================================================
@@ -72,11 +83,8 @@ process = None  # For CPU monitoring
 last_update_check = 0
 update_check_count = 0
 
-# Initialize psutil process tracking
-try:
-    process = psutil.Process(os.getpid())
-except:
-    pass
+# Byte verification tracking
+file_size_cache = {}  # Cache for file sizes: {filename: {sha: size, last_check: timestamp}}
 
 def get_cpu_usage():
     """Get current CPU and memory usage"""
@@ -262,6 +270,16 @@ def get_version_tracker_path(filename):
     tracker_folder = get_tracker_folder()
     return os.path.join(tracker_folder, f".{filename}_version.txt")
 
+def get_byte_tracker_path(filename):
+    """Get path to byte size tracker file"""
+    tracker_folder = get_tracker_folder()
+    return os.path.join(tracker_folder, f".{filename}_bytes.txt")
+
+def get_hash_tracker_path(filename):
+    """Get path to content hash tracker file"""
+    tracker_folder = get_tracker_folder()
+    return os.path.join(tracker_folder, f".{filename}_hash.txt")
+
 def get_current_version(filename):
     """Get current stored version (content SHA)"""
     tracker_file = get_version_tracker_path(filename)
@@ -275,6 +293,32 @@ def get_current_version(filename):
             log_message("ERROR", f"Error reading version file {tracker_file}: {e}")
     return None
 
+def get_current_byte_size(filename):
+    """Get current stored byte size"""
+    tracker_file = get_byte_tracker_path(filename)
+    if os.path.exists(tracker_file):
+        try:
+            with open(tracker_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return int(content)
+        except Exception as e:
+            log_message("ERROR", f"Error reading byte file {tracker_file}: {e}")
+    return None
+
+def get_current_content_hash(filename):
+    """Get current stored content hash"""
+    tracker_file = get_hash_tracker_path(filename)
+    if os.path.exists(tracker_file):
+        try:
+            with open(tracker_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return content
+        except Exception as e:
+            log_message("ERROR", f"Error reading hash file {tracker_file}: {e}")
+    return None
+
 def save_current_version(filename, content_sha):
     """Save current version (content SHA)"""
     tracker_file = get_version_tracker_path(filename)
@@ -285,6 +329,30 @@ def save_current_version(filename, content_sha):
         return True
     except Exception as e:
         log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
+        return False
+
+def save_current_byte_size(filename, byte_size):
+    """Save current byte size"""
+    tracker_file = get_byte_tracker_path(filename)
+    try:
+        with open(tracker_file, 'w', encoding='utf-8') as f:
+            f.write(str(byte_size))
+        log_message("DEBUG", f"Saved byte size {byte_size} for {filename}")
+        return True
+    except Exception as e:
+        log_message("ERROR", f"Failed to save byte size for {filename}: {e}")
+        return False
+
+def save_current_content_hash(filename, content_hash):
+    """Save current content hash"""
+    tracker_file = get_hash_tracker_path(filename)
+    try:
+        with open(tracker_file, 'w', encoding='utf-8') as f:
+            f.write(content_hash)
+        log_message("DEBUG", f"Saved content hash {content_hash[:8]} for {filename}")
+        return True
+    except Exception as e:
+        log_message("ERROR", f"Failed to save content hash for {filename}: {e}")
         return False
 
 def optimized_webhook_worker():
@@ -548,8 +616,8 @@ def make_github_request(url, headers=None, retry_count=0):
         log_message("ERROR", f"Request failed: {e}", send_to_discord=True)
         return None
 
-def get_file_content_sha(file_path):
-    """Get the content SHA (blob SHA) for a file - changes when file content changes"""
+def get_file_info(file_path):
+    """Get file information including SHA and size from GitHub API"""
     config = load_config()
     
     api_url = f"https://api.github.com/repos/{config['repository_owner']}/{config['repository_name']}/contents/{urllib.parse.quote(file_path)}"
@@ -564,16 +632,72 @@ def get_file_content_sha(file_path):
         response = make_github_request(url)
         if response:
             file_info = json.loads(response.read().decode('utf-8'))
-            if 'sha' in file_info:
-                return file_info['sha']
+            if 'sha' in file_info and 'size' in file_info:
+                return {
+                    'sha': file_info['sha'],
+                    'size': file_info['size'],
+                    'name': file_info.get('name', ''),
+                    'content': file_info.get('content', ''),  # Base64 encoded content
+                    'encoding': file_info.get('encoding', '')
+                }
         return None
         
     except Exception as e:
-        log_message("ERROR", f"Failed to get content SHA for {file_path}: {e}", send_to_discord=True)
+        log_message("ERROR", f"Failed to get file info for {file_path}: {e}", send_to_discord=True)
         return None
 
+def verify_byte_size_change(file_path, new_sha, new_size):
+    """Verify that byte size has actually changed from previous version"""
+    config = load_config()
+    
+    if not config.get('enable_byte_verification', True):
+        return True  # Skip verification if disabled
+    
+    # Get stored byte size
+    current_size = get_current_byte_size(file_path)
+    
+    if current_size is None:
+        # No previous size stored, treat as changed
+        log_message("INFO", f"No previous byte size stored for {file_path}, accepting new size: {new_size} bytes")
+        return True
+    
+    if current_size != new_size:
+        # Byte size has changed
+        log_message("INFO", f"Byte size changed for {file_path}: {current_size} -> {new_size} bytes")
+        return True
+    else:
+        # Byte size hasn't changed, but SHA has
+        log_message("WARNING", f"SHA changed but byte size unchanged for {file_path}: {new_size} bytes", send_to_discord=True)
+        
+        # Check if we should retry
+        retries = config.get('byte_verification_retries', 3)
+        delay = config.get('byte_verification_delay', 10)
+        
+        for attempt in range(retries):
+            log_message("INFO", f"Byte verification attempt {attempt + 1}/{retries} for {file_path}")
+            time.sleep(delay)
+            
+            # Re-fetch file info
+            refreshed_info = get_file_info(file_path)
+            if refreshed_info and refreshed_info['sha'] == new_sha:
+                # SHA still the same, check size again
+                if refreshed_info['size'] != new_size:
+                    # Size has changed on retry
+                    log_message("INFO", f"Byte size changed on retry {attempt + 1}: {new_size} -> {refreshed_info['size']} bytes")
+                    return True
+                else:
+                    log_message("INFO", f"Byte size still unchanged on retry {attempt + 1}: {refreshed_info['size']} bytes")
+            else:
+                # SHA changed during retry
+                log_message("INFO", f"SHA changed during byte verification retry for {file_path}")
+                return False  # SHA changed, will be handled in next check cycle
+        
+        # All retries failed
+        log_message("ERROR", f"Byte size verification failed after {retries} retries for {file_path}. Not executing update.", send_to_discord=True)
+        return False
+
 def check_for_updates():
-    """Check for updates using GitHub API with rate limit awareness"""
+    """Check for updates using GitHub API with byte size verification"""
     global last_update_check, update_check_count
     current_time = time.time()
     
@@ -594,33 +718,63 @@ def check_for_updates():
     
     try:
         # Check main script
-        script_content_sha = get_file_content_sha(config['script_path'])
-        if script_content_sha:
+        script_info = get_file_info(config['script_path'])
+        if script_info:
+            script_content_sha = script_info['sha']
+            script_size = script_info['size']
             current_sha = get_current_version("script")
             if current_sha:
                 if script_content_sha != current_sha:
-                    log_message("INFO", f"script.py content has changed (SHA: {script_content_sha[:8]})", send_to_discord=True, script_type="main")
-                    updated_files.append("script")
+                    # Verify byte size has also changed
+                    if verify_byte_size_change("script", script_content_sha, script_size):
+                        log_message("INFO", f"script.py updated (SHA: {script_content_sha[:8]}, Size: {script_size} bytes)", 
+                                   send_to_discord=True, script_type="main")
+                        updated_files.append("script")
+                        # Save new byte size
+                        save_current_byte_size("script", script_size)
+                    else:
+                        log_message("WARNING", f"script.py SHA changed but byte size verification failed. Update deferred.", 
+                                   send_to_discord=True, script_type="main")
         
         # Check additional script
         additional_script_path = config.get('additional_script_path')
         if additional_script_path:
-            additional_content_sha = get_file_content_sha(additional_script_path)
-            if additional_content_sha:
+            additional_info = get_file_info(additional_script_path)
+            if additional_info:
+                additional_content_sha = additional_info['sha']
+                additional_size = additional_info['size']
                 current_sha = get_current_version("additional")
                 if current_sha:
                     if additional_content_sha != current_sha:
-                        log_message("INFO", f"additional.pyw content has changed (SHA: {additional_content_sha[:8]})", send_to_discord=True, script_type="additional")
-                        updated_files.append("additional")
+                        # Verify byte size has also changed
+                        if verify_byte_size_change("additional", additional_content_sha, additional_size):
+                            log_message("INFO", f"additional.pyw updated (SHA: {additional_content_sha[:8]}, Size: {additional_size} bytes)", 
+                                       send_to_discord=True, script_type="additional")
+                            updated_files.append("additional")
+                            # Save new byte size
+                            save_current_byte_size("additional", additional_size)
+                        else:
+                            log_message("WARNING", f"additional.pyw SHA changed but byte size verification failed. Update deferred.", 
+                                       send_to_discord=True, script_type="additional")
         
         # Check requirements
-        requirements_content_sha = get_file_content_sha(config['requirements_path'])
-        if requirements_content_sha:
+        requirements_info = get_file_info(config['requirements_path'])
+        if requirements_info:
+            requirements_content_sha = requirements_info['sha']
+            requirements_size = requirements_info['size']
             current_sha = get_current_version("requirements")
             if current_sha:
                 if requirements_content_sha != current_sha:
-                    log_message("INFO", f"requirements.txt content has changed (SHA: {requirements_content_sha[:8]})", send_to_discord=True)
-                    updated_files.append("requirements")
+                    # Verify byte size has also changed
+                    if verify_byte_size_change("requirements", requirements_content_sha, requirements_size):
+                        log_message("INFO", f"requirements.txt updated (SHA: {requirements_content_sha[:8]}, Size: {requirements_size} bytes)", 
+                                   send_to_discord=True)
+                        updated_files.append("requirements")
+                        # Save new byte size
+                        save_current_byte_size("requirements", requirements_size)
+                    else:
+                        log_message("WARNING", f"requirements.txt SHA changed but byte size verification failed. Update deferred.", 
+                                   send_to_discord=True)
         
         return updated_files
         
@@ -628,14 +782,55 @@ def check_for_updates():
         log_message("ERROR", f"Error checking for updates: {e}", send_to_discord=True)
         return []
 
-def download_file_direct(file_path):
-    """Download file directly from raw GitHub URL"""
+def download_file_with_cache_control(file_path):
+    """Download file with cache control to avoid CDN issues"""
+    config = load_config()
+    
+    # Use the GitHub API to get base64 encoded content (more reliable than raw URL)
+    file_info = get_file_info(file_path)
+    if file_info and 'content' in file_info and file_info['encoding'] == 'base64':
+        try:
+            # Decode base64 content
+            content = base64.b64decode(file_info['content']).decode('utf-8')
+            
+            # Verify downloaded content size
+            downloaded_size = len(content.encode('utf-8'))
+            expected_size = file_info['size']
+            
+            if downloaded_size != expected_size:
+                log_message("WARNING", f"API content size mismatch for {file_path}: expected {expected_size}, got {downloaded_size} bytes")
+                # Try fallback to raw URL
+                return download_file_direct_fallback(file_path, expected_size)
+            
+            return content
+        except Exception as e:
+            log_message("ERROR", f"Failed to decode base64 content for {file_path}: {e}")
+            # Fallback to raw URL
+            return download_file_direct_fallback(file_path)
+    
+    # Fallback to raw URL if API doesn't return content
+    return download_file_direct_fallback(file_path)
+
+def download_file_direct_fallback(file_path, expected_size=None):
+    """Fallback download using raw URL with cache control"""
     config = load_config()
     
     raw_url = f"https://raw.githubusercontent.com/{config['repository_owner']}/{config['repository_name']}/{config['branch']}/{urllib.parse.quote(file_path)}"
     
+    # Add cache-busting parameter if enabled
+    if config.get('cache_busting', True):
+        cache_buster = str(int(time.time() * 1000))
+        raw_url = f"{raw_url}?cb={cache_buster}"
+    
     try:
         headers = {'User-Agent': 'GitHubLauncher/2.0'}
+        
+        # Add cache control headers if enabled
+        if config.get('enable_cache_control', True):
+            headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            headers['Pragma'] = 'no-cache'
+            headers['Expires'] = '0'
+        
         token = config.get('github_token')
         if token:
             headers['Authorization'] = f"token {token}"
@@ -643,11 +838,63 @@ def download_file_direct(file_path):
         req = urllib.request.Request(raw_url, headers=headers)
         response = urllib.request.urlopen(req, timeout=15)
         content = response.read().decode('utf-8')
+        
+        # Verify downloaded content size matches expected
+        downloaded_size = len(content.encode('utf-8'))
+        if expected_size and downloaded_size != expected_size:
+            log_message("WARNING", f"Downloaded size mismatch for {file_path}: expected {expected_size}, got {downloaded_size} bytes")
+            # Still return the content, but log the warning
+        
         return content
         
     except Exception as e:
         log_message("ERROR", f"Failed to download {file_path}: {e}", send_to_discord=True)
         return None
+
+def calculate_content_hash(content):
+    """Calculate SHA256 hash of content"""
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+def verify_downloaded_content(file_type, content, expected_size, remote_sha):
+    """Verify downloaded content matches expectations"""
+    if not content:
+        return False, "No content downloaded"
+    
+    # Check size
+    downloaded_size = len(content.encode('utf-8'))
+    if expected_size and downloaded_size != expected_size:
+        return False, f"Size mismatch: expected {expected_size}, got {downloaded_size} bytes"
+    
+    # Calculate hash of downloaded content
+    content_hash = calculate_content_hash(content)
+    
+    # Get previous hash for comparison
+    previous_hash = get_current_content_hash(file_type)
+    
+    if previous_hash and content_hash == previous_hash:
+        # Content hash hasn't changed even though SHA and size changed
+        log_message("WARNING", f"Content hash unchanged for {file_type} (hash: {content_hash[:8]})")
+        
+        # Double-check by downloading again with different method
+        config = load_config()
+        file_path = ""
+        if file_type == "script":
+            file_path = config['script_path']
+        elif file_type == "additional":
+            file_path = config.get('additional_script_path', '')
+        elif file_type == "requirements":
+            file_path = config['requirements_path']
+        
+        if file_path:
+            # Try alternative download method
+            alt_content = download_file_direct_fallback(file_path)
+            if alt_content:
+                alt_hash = calculate_content_hash(alt_content)
+                if alt_hash != content_hash:
+                    log_message("INFO", f"Alternative download yielded different hash: {alt_hash[:8]} vs {content_hash[:8]}")
+                    return True, "Content verified (alternative download different)"
+    
+    return True, f"Content verified (size: {downloaded_size} bytes, hash: {content_hash[:8]})"
 
 def optimized_capture_script_output(process, script_type="main"):
     """Optimized: Capture and log script output in real-time"""
@@ -748,14 +995,17 @@ def run_additional_script():
     temp_script = None
     
     try:
-        # Get current content SHA to check if we need to update
-        remote_sha = get_file_content_sha(additional_script_path)
+        # Get current file info to check if we need to update
+        remote_info = get_file_info(additional_script_path)
         
         # If file doesn't exist on GitHub, just return success (no error)
-        if not remote_sha:
+        if not remote_info:
             log_message("INFO", "Additional script not found on GitHub (file may not exist)", 
                        send_to_discord=False, script_type="additional")
             return True
+        
+        remote_sha = remote_info['sha']
+        remote_size = remote_info['size']
         
         # Get current stored SHA
         current_sha = get_current_version("additional")
@@ -764,7 +1014,7 @@ def run_additional_script():
         need_to_update = False
         if current_sha != remote_sha:
             need_to_update = True
-            log_message("INFO", f"Additional script update detected (SHA: {remote_sha[:8]})", 
+            log_message("INFO", f"Additional script update detected (SHA: {remote_sha[:8]}, Size: {remote_size} bytes)", 
                        send_to_discord=True, script_type="additional")
         
         # If we already have the latest version and script is running, don't restart
@@ -773,14 +1023,15 @@ def run_additional_script():
                        send_to_discord=False, script_type="additional")
             return True
         
-        # Download script
-        script_content = download_file_direct(additional_script_path)
+        # Download script with cache control
+        script_content = download_file_with_cache_control(additional_script_path)
         
         # Check if script is empty or doesn't exist
         if not script_content:
             log_message("INFO", "Additional script is empty or not accessible", 
                        send_to_discord=False, script_type="additional")
             save_current_version("additional", remote_sha)
+            save_current_byte_size("additional", remote_size)
             return True
         
         # Check if script content is empty after stripping whitespace
@@ -788,7 +1039,15 @@ def run_additional_script():
             log_message("INFO", "Additional script is empty (0 bytes), skipping execution", 
                        send_to_discord=False, script_type="additional")
             save_current_version("additional", remote_sha)
+            save_current_byte_size("additional", remote_size)
             return True
+        
+        # Verify downloaded content
+        verified, verification_msg = verify_downloaded_content("additional", script_content, remote_size, remote_sha)
+        if not verified:
+            log_message("ERROR", f"Content verification failed for additional script: {verification_msg}", 
+                       send_to_discord=True, script_type="additional")
+            return False
         
         # Save to temp file
         temp_dir = tempfile.gettempdir()
@@ -798,7 +1057,13 @@ def run_additional_script():
         with open(temp_script, 'w', encoding='utf-8') as f:
             f.write(script_content)
         
-        log_message("INFO", f"Additional script saved to: {temp_script}", 
+        # Verify temp file size matches expected
+        temp_size = os.path.getsize(temp_script)
+        if temp_size != remote_size:
+            log_message("WARNING", f"Temp file size mismatch: expected {remote_size}, got {temp_size} bytes", 
+                       send_to_discord=True, script_type="additional")
+        
+        log_message("INFO", f"Additional script saved to: {temp_script} ({temp_size} bytes, {verification_msg})", 
                    send_to_discord=False, script_type="additional")
         
         # Terminate existing additional script process if any
@@ -867,6 +1132,8 @@ def run_additional_script():
                 log_message("INFO", "Additional script completed successfully (exit code 0)", 
                            send_to_discord=False, script_type="additional")
                 save_current_version("additional", remote_sha)
+                save_current_byte_size("additional", remote_size)
+                save_current_content_hash("additional", calculate_content_hash(script_content))
                 return True
             else:
                 error_msg = f"Additional script terminated with code: {process.returncode}"
@@ -875,10 +1142,12 @@ def run_additional_script():
                 return False
         
         # Script is still running
-        success_msg = f"Additional script started successfully! PID: {process.pid} SHA: {remote_sha[:8]}"
+        success_msg = f"Additional script started successfully! PID: {process.pid} SHA: {remote_sha[:8]} Size: {remote_size} bytes"
         log_message("SUCCESS", success_msg, send_to_discord=True, include_output=True, script_type="additional")
         
         save_current_version("additional", remote_sha)
+        save_current_byte_size("additional", remote_size)
+        save_current_content_hash("additional", calculate_content_hash(script_content))
         
         # Clean up temp file
         def cleanup_temp():
@@ -921,13 +1190,16 @@ def run_script_from_github():
     temp_script = None
     
     try:
-        # Get current content SHA to check if we need to update
-        remote_sha = get_file_content_sha(config['script_path'])
+        # Get current file info to check if we need to update
+        remote_info = get_file_info(config['script_path'])
         
-        if not remote_sha:
-            error_msg = "Failed to get remote script SHA"
+        if not remote_info:
+            error_msg = "Failed to get remote script info"
             log_message("ERROR", error_msg, send_to_discord=True, script_type="main")
             return False
+        
+        remote_sha = remote_info['sha']
+        remote_size = remote_info['size']
         
         # Get current stored SHA
         current_sha = get_current_version("script")
@@ -937,12 +1209,19 @@ def run_script_from_github():
             log_message("INFO", "Script is already up to date and running", script_type="main")
             return True
         
-        # Download script
-        script_content = download_file_direct(config['script_path'])
+        # Download script with cache control
+        script_content = download_file_with_cache_control(config['script_path'])
         
         if not script_content:
             error_msg = "Failed to download script"
             log_message("ERROR", error_msg, send_to_discord=True, script_type="main")
+            return False
+        
+        # Verify downloaded content
+        verified, verification_msg = verify_downloaded_content("script", script_content, remote_size, remote_sha)
+        if not verified:
+            log_message("ERROR", f"Content verification failed for main script: {verification_msg}", 
+                       send_to_discord=True, script_type="main")
             return False
         
         # Save to temp file
@@ -953,7 +1232,13 @@ def run_script_from_github():
         with open(temp_script, 'w', encoding='utf-8') as f:
             f.write(script_content)
         
-        log_message("INFO", f"Script saved to: {temp_script}", script_type="main")
+        # Verify temp file size matches expected
+        temp_size = os.path.getsize(temp_script)
+        if temp_size != remote_size:
+            log_message("WARNING", f"Temp file size mismatch: expected {remote_size}, got {temp_size} bytes", 
+                       send_to_discord=True, script_type="main")
+        
+        log_message("INFO", f"Script saved to: {temp_script} ({temp_size} bytes, {verification_msg})", script_type="main")
         
         # Terminate existing script process if any
         if current_script_process and current_script_process.poll() is None:
@@ -1005,11 +1290,13 @@ def run_script_from_github():
             return False
         
         # Send startup success notification
-        success_msg = f"✅ Main script started successfully!\nPID: {process.pid}\nSHA: {remote_sha[:8]}"
+        success_msg = f"✅ Main script started successfully!\nPID: {process.pid}\nSHA: {remote_sha[:8]}\nSize: {remote_size} bytes\nVerification: {verification_msg}"
         log_message("SUCCESS", success_msg, send_to_discord=True, include_output=True, script_type="main")
         
-        # Save content SHA after successful start
+        # Save content SHA, byte size, and content hash after successful start
         save_current_version("script", remote_sha)
+        save_current_byte_size("script", remote_size)
+        save_current_content_hash("script", calculate_content_hash(script_content))
         
         # Clean up temp file after delay
         def cleanup_temp():
@@ -1040,12 +1327,15 @@ def install_requirements():
     config = load_config()
     
     try:
-        # Get current SHA to check if we need to update
-        remote_sha = get_file_content_sha(config['requirements_path'])
+        # Get current info to check if we need to update
+        remote_info = get_file_info(config['requirements_path'])
         
-        if not remote_sha:
+        if not remote_info:
             log_message("INFO", "No requirements.txt found or can't access")
             return True
+        
+        remote_sha = remote_info['sha']
+        remote_size = remote_info['size']
         
         # Get current stored SHA
         current_sha = get_current_version("requirements")
@@ -1055,17 +1345,19 @@ def install_requirements():
             log_message("INFO", "Requirements already up to date")
             return True
         
-        # Download requirements
-        requirements_content = download_file_direct(config['requirements_path'])
+        # Download requirements with cache control
+        requirements_content = download_file_with_cache_control(config['requirements_path'])
         
         if not requirements_content:
             log_message("INFO", "No requirements.txt or empty")
             save_current_version("requirements", remote_sha)
+            save_current_byte_size("requirements", remote_size)
             return True
         
         if not requirements_content.strip():
             log_message("INFO", "Empty requirements.txt")
             save_current_version("requirements", remote_sha)
+            save_current_byte_size("requirements", remote_size)
             return True
         
         # Validate requirements file content
@@ -1079,6 +1371,7 @@ def install_requirements():
         if not valid_lines:
             log_message("INFO", "No valid requirements found")
             save_current_version("requirements", remote_sha)
+            save_current_byte_size("requirements", remote_size)
             return True
         
         # Install requirements
@@ -1109,6 +1402,8 @@ def install_requirements():
             success_msg = f"✅ Successfully installed {len(valid_lines)} requirements"
             log_message("SUCCESS", success_msg, send_to_discord=True)
             save_current_version("requirements", remote_sha)
+            save_current_byte_size("requirements", remote_size)
+            save_current_content_hash("requirements", calculate_content_hash(requirements_content))
         else:
             stdout, stderr = process.communicate()
             error_details = ""
@@ -1140,18 +1435,19 @@ def initial_setup():
     
     log_message("STARTUP", "🚀 Performing initial setup...", send_to_discord=True)
     
-    # Get SHAs and save them without triggering updates
+    # Get SHAs and byte sizes and save them without triggering updates
     config = load_config()
     
     for file_path, file_type in [(config['script_path'], "script"), 
                                  (config.get('additional_script_path', ''), "additional"),
                                  (config['requirements_path'], "requirements")]:
         if file_path:
-            content_sha = get_file_content_sha(file_path)
-            if content_sha:
+            file_info = get_file_info(file_path)
+            if file_info:
                 current_sha = get_current_version(file_type)
                 if not current_sha:
-                    save_current_version(file_type, content_sha)
+                    save_current_version(file_type, file_info['sha'])
+                    save_current_byte_size(file_type, file_info['size'])
     
     # Install requirements
     log_message("INFO", "Checking requirements...", send_to_discord=True)
@@ -1342,10 +1638,16 @@ def process_command(command):
         print("  exit              - Exit the launcher")
         print("  help              - Show this help")
         print("  cpu               - Show CPU usage")
+        print("  bytes             - Show current byte sizes")
+        print("  verify            - Force byte verification check")
+        print("  hashes            - Show current content hashes")
     elif command == "status":
         print("\n[STATUS] Launcher is running")
         print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
         print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
+        print(f"  Byte verification: {'Enabled' if CONFIG.get('enable_byte_verification', True) else 'Disabled'}")
+        print(f"  Cache control: {'Enabled' if CONFIG.get('enable_cache_control', True) else 'Disabled'}")
+        print(f"  Cache busting: {'Enabled' if CONFIG.get('cache_busting', True) else 'Disabled'}")
         
         # Main script status
         if current_script_process:
@@ -1395,6 +1697,39 @@ def process_command(command):
         print(f"\n[CPU] Usage: {cpu_info['cpu_percent']}%")
         print(f"[CPU] Memory: {cpu_info['memory_mb']}MB")
         print(f"[CPU] Threads: {cpu_info['threads']}")
+    elif command == "bytes":
+        print("\n[BYTE SIZES] Current stored byte sizes:")
+        for file_type in ["script", "additional", "requirements"]:
+            size = get_current_byte_size(file_type)
+            if size is not None:
+                print(f"  {file_type:15}: {size} bytes")
+            else:
+                print(f"  {file_type:15}: Not stored")
+    elif command == "hashes":
+        print("\n[CONTENT HASHES] Current stored content hashes:")
+        for file_type in ["script", "additional", "requirements"]:
+            content_hash = get_current_content_hash(file_type)
+            if content_hash is not None:
+                print(f"  {file_type:15}: {content_hash[:16]}...")
+            else:
+                print(f"  {file_type:15}: Not stored")
+    elif command == "verify":
+        print("\n[VERIFY] Performing byte verification check...")
+        config = load_config()
+        for file_path, file_type in [(config['script_path'], "script"), 
+                                     (config.get('additional_script_path', ''), "additional"),
+                                     (config['requirements_path'], "requirements")]:
+            if file_path:
+                file_info = get_file_info(file_path)
+                if file_info:
+                    current_size = get_current_byte_size(file_type)
+                    if current_size is not None:
+                        if file_info['size'] != current_size:
+                            print(f"  {file_type:15}: Size changed! {current_size} -> {file_info['size']} bytes")
+                        else:
+                            print(f"  {file_type:15}: Size unchanged ({current_size} bytes)")
+                    else:
+                        print(f"  {file_type:15}: No size stored (current: {file_info['size']} bytes)")
     elif command == "exit":
         print("\n[COMMAND] Exiting launcher...")
         shutdown_event.set()
@@ -1436,7 +1771,7 @@ def main():
     atexit.register(cleanup)
     
     print("=" * 60)
-    print("GitHub Launcher v2.0 (Optimized CPU Version)")
+    print("GitHub Launcher v2.0 (Optimized CPU Version with Byte Verification)")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
@@ -1467,6 +1802,25 @@ def main():
     else:
         print("\n✓ GitHub token configured")
     
+    # Check byte verification
+    if config.get('enable_byte_verification', True):
+        print("✓ Byte verification enabled (will check both SHA and file size)")
+        print(f"  Retries: {config.get('byte_verification_retries', 3)}")
+        print(f"  Delay: {config.get('byte_verification_delay', 10)} seconds")
+    else:
+        print("⚠ Byte verification disabled (using SHA only)")
+    
+    # Check cache control
+    if config.get('enable_cache_control', True):
+        print("✓ Cache control enabled (bypass CDN caching)")
+    else:
+        print("⚠ Cache control disabled")
+    
+    if config.get('cache_busting', True):
+        print("✓ Cache busting enabled (adds timestamp to URLs)")
+    else:
+        print("⚠ Cache busting disabled")
+    
     # Check additional script configuration
     if config.get('additional_script_path'):
         print("✓ Additional script configured")
@@ -1488,6 +1842,9 @@ def main():
     print("  Type 'restart_main' - Restart main script only")
     print("  Type 'restart_add'  - Restart additional script only")
     print("  Type 'cpu'          - Show CPU usage")
+    print("  Type 'bytes'        - Show current byte sizes")
+    print("  Type 'hashes'       - Show current content hashes")
+    print("  Type 'verify'       - Force byte verification check")
     print("  Type 'help'         - Show command help")
     print("  Type 'exit'         - Exit the launcher")
     print("-" * 60)
@@ -1506,6 +1863,8 @@ def main():
         print("✓ Launcher running")
         print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
         print(f"✓ CPU monitoring every {config.get('cpu_monitor_interval', 60)} seconds")
+        print(f"✓ Byte verification: {'ENABLED' if config.get('enable_byte_verification', True) else 'DISABLED'}")
+        print(f"✓ Cache control: {'ENABLED' if config.get('enable_cache_control', True) else 'DISABLED'}")
         print("✓ Type 'config' in console to edit configuration")
         print("=" * 60)
     else:
