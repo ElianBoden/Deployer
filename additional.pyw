@@ -74,7 +74,7 @@ def main():
     # Try to load and display the image
     try:
         # Use a much scarier image
-        image_url = "https://images.unsplash.com/photo-1769109002468-85f8a39d5ccd?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
+        image_url = "https://plus.unsplash.com/premium_photo-1768673905399-bb44a47ec66c?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
         
         if image_url and image_url.strip():
             # Download image
