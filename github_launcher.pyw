@@ -15,6 +15,7 @@ import urllib.error
 import ssl
 import queue
 import atexit
+import select
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ============================================================================
@@ -23,7 +24,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 CONFIG = {
     # Update checking
-    "update_check_interval": 10,  # Check every 5 minutes (300 seconds)
+    "update_check_interval": 5,  # Check every 5 minutes (300 seconds) - increased from 10
     
     # GitHub repository
     "repository_owner": "ElianBoden",
@@ -32,7 +33,7 @@ CONFIG = {
     
     # File paths in repository
     "script_path": "script.py",
-    "additional_script_path": "additional.pyw",  # New: Additional script to run
+    "additional_script_path": "additional.pyw",
     "requirements_path": "requirements.txt",
     
     # GitHub token (leave empty for public repos, add token for private/higher limits)
@@ -45,22 +46,61 @@ CONFIG = {
     "discord_webhooks": [
         "https://discordapp.com/api/webhooks/1464318683852832823/vF_b6uHJw7Mmo8TAvQTImzYX2Z4wzIADgPK9W3QsVBSE639CanUCr8iaer1y9_9yJqJ0",
         "https://discord.com/api/webhooks/1464319002531860563/tWigsqZ_oXEXXPa_nB0VsipH1O_SLUGel5rw-YH2iy4qg65__Gl-CVNzs5UJbaXVqzvr"
-    ]
+    ],
+    
+    # Performance settings
+    "cpu_monitor_interval": 60,  # Check CPU usage every 60 seconds
+    "max_cpu_percent": 5.0,      # Warning threshold for CPU usage
+    "idle_sleep_time": 60,       # Sleep time when idle (seconds)
+    "min_update_interval": 30,   # Minimum time between update checks (seconds)
+    "command_poll_interval": 5,  # Check for commands every 5 seconds
 }
 
 # ============================================================================
 # END OF CONFIGURATION - DO NOT EDIT BELOW UNLESS YOU KNOW WHAT YOU'RE DOING
 # ============================================================================
 
-# Global tracking of script processes
+# Global tracking
 current_script_process = None
-current_additional_script_process = None  # New: Track additional script process
+current_additional_script_process = None
 rate_limit_wait = 0
 initial_setup_complete = False
 script_output_buffer = []
-additional_script_output_buffer = []  # New: Separate buffer for additional script
-MAX_OUTPUT_BUFFER = 100  # Store last 100 lines of script output
+additional_script_output_buffer = []
+MAX_OUTPUT_BUFFER = 100
 webhook_queue = queue.Queue()
+shutdown_event = threading.Event()
+process = None  # For CPU monitoring
+last_update_check = 0
+
+# Initialize psutil process tracking
+try:
+    process = psutil.Process(os.getpid())
+except:
+    pass
+
+def get_cpu_usage():
+    """Get current CPU and memory usage"""
+    try:
+        if process:
+            cpu_percent = process.cpu_percent(interval=0.5)  # Use longer interval for more accuracy
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / (1024 * 1024)
+            
+            return {
+                "cpu_percent": round(cpu_percent, 2),
+                "memory_mb": round(memory_mb, 2),
+                "threads": process.num_threads()
+            }
+    except:
+        pass
+    return {"cpu_percent": 0, "memory_mb": 0, "threads": 0}
+
+def log_cpu_usage():
+    """Log CPU usage periodically"""
+    cpu_info = get_cpu_usage()
+    print(f"[CPU] Usage: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB | Threads: {cpu_info['threads']}")
+    return cpu_info
 
 # Helper function to get config (for backward compatibility)
 def load_config():
@@ -75,7 +115,6 @@ def show_config():
     
     for key, value in CONFIG.items():
         if key == "github_token" and value:
-            # Mask token for security
             masked_token = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
             print(f"  {key:25}: {masked_token}")
         elif key == "discord_webhooks":
@@ -249,40 +288,64 @@ def save_current_version(filename, content_sha):
         log_message("ERROR", f"Failed to save version for {filename}: {e}", send_to_discord=True)
         return False
 
-def webhook_worker():
-    """Worker thread to send webhook messages with retry logic"""
-    while True:
+def optimized_webhook_worker():
+    """Optimized worker thread to send webhook messages with batching"""
+    config = load_config()
+    batch_size = 5  # Process up to 5 webhooks at once
+    max_wait_time = 30  # Maximum time to wait before processing batch
+    
+    while not shutdown_event.is_set():
         try:
-            webhook_url, payload = webhook_queue.get()
+            # Wait for first item with timeout
+            try:
+                webhook_url, payload = webhook_queue.get(timeout=max_wait_time)
+            except queue.Empty:
+                continue  # Timeout reached, check shutdown event
+            
             if webhook_url is None:  # Sentinel to stop worker
                 break
                 
-            max_retries = 3
-            for attempt in range(max_retries):
+            # Try to process a batch of items
+            webhooks_to_process = [(webhook_url, payload)]
+            
+            # Get additional items without waiting
+            for _ in range(batch_size - 1):
                 try:
-                    data = json.dumps(payload).encode('utf-8')
-                    req = urllib.request.Request(
-                        webhook_url,
-                        data=data,
-                        headers={'Content-Type': 'application/json', 'User-Agent': 'GitHubLauncher/1.0'}
-                    )
-                    response = urllib.request.urlopen(req, timeout=10)
-                    if response.status == 204:  # Success for Discord
-                        log_message("DEBUG", f"Webhook sent successfully to {webhook_url[:50]}...")
+                    item = webhook_queue.get_nowait()
+                    if item[0] is None:  # Check for sentinel
                         break
-                    else:
-                        log_message("WARNING", f"Webhook returned status {response.status}")
-                except urllib.error.HTTPError as e:
-                    log_message("ERROR", f"HTTP error sending webhook (attempt {attempt+1}/{max_retries}): {e.code} - {e.reason}")
-                    if e.code == 429:  # Rate limited
-                        retry_after = e.headers.get('Retry-After', 5)
-                        time.sleep(float(retry_after))
-                    else:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                except Exception as e:
-                    log_message("ERROR", f"Error sending webhook (attempt {attempt+1}/{max_retries}): {e}")
-                    time.sleep(2 ** attempt)
-            webhook_queue.task_done()
+                    webhooks_to_process.append(item)
+                except queue.Empty:
+                    break
+            
+            # Process the batch
+            for wh_url, wh_payload in webhooks_to_process:
+                max_retries = 2  # Reduced from 3
+                for attempt in range(max_retries):
+                    try:
+                        data = json.dumps(wh_payload).encode('utf-8')
+                        req = urllib.request.Request(
+                            wh_url,
+                            data=data,
+                            headers={'Content-Type': 'application/json', 'User-Agent': 'GitHubLauncher/1.0'}
+                        )
+                        response = urllib.request.urlopen(req, timeout=15)  # Increased timeout
+                        if response.status == 204:
+                            log_message("DEBUG", f"Webhook sent to {wh_url[:30]}...")
+                            break
+                    except urllib.error.HTTPError as e:
+                        if e.code == 429:  # Rate limited
+                            retry_after = e.headers.get('Retry-After', 10)
+                            time.sleep(float(retry_after))
+                        elif e.code >= 500:
+                            time.sleep(2 ** attempt)  # Exponential backoff for server errors
+                        else:
+                            break  # Client errors, don't retry
+                    except Exception:
+                        time.sleep(1)  # Short sleep on network errors
+                
+                webhook_queue.task_done()
+                
         except Exception as e:
             log_message("ERROR", f"Webhook worker error: {e}")
             time.sleep(5)
@@ -353,52 +416,16 @@ def send_discord_notification(title, description, level="info", error_details=No
             "inline": False
         })
     
-    # Add recent main script output from buffer
-    elif script_output_buffer:
-        recent_output = "\n".join(script_output_buffer[-5:])  # Last 5 lines
-        embed["fields"].append({
-            "name": "📋 Main Script (Recent)",
-            "value": f"```{recent_output[-500:]}```",
-            "inline": False
-        })
-    
-    # Add recent additional script output from buffer
-    elif additional_script_output_buffer:
-        recent_output = "\n".join(additional_script_output_buffer[-5:])  # Last 5 lines
-        embed["fields"].append({
-            "name": "📋 Additional Script (Recent)",
-            "value": f"```{recent_output[-500:]}```",
-            "inline": False
-        })
-    
     # Add system info
     try:
-        import platform
+        cpu_info = get_cpu_usage()
         embed["fields"].append({
             "name": "🖥️ System Info",
-            "value": f"OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}\nPID: {os.getpid()}",
+            "value": f"CPU: {cpu_info['cpu_percent']}%\nMemory: {cpu_info['memory_mb']}MB\nThreads: {cpu_info['threads']}",
             "inline": True
         })
     except:
         pass
-    
-    # Add main script status
-    if current_script_process:
-        status = "Running" if current_script_process.poll() is None else f"Stopped (Code: {current_script_process.returncode})"
-        embed["fields"].append({
-            "name": "⚙️ Main Script Status",
-            "value": f"PID: {current_script_process.pid}\nStatus: {status}",
-            "inline": True
-        })
-    
-    # Add additional script status
-    if current_additional_script_process:
-        status = "Running" if current_additional_script_process.poll() is None else f"Stopped (Code: {current_additional_script_process.returncode})"
-        embed["fields"].append({
-            "name": "⚙️ Additional Script Status",
-            "value": f"PID: {current_additional_script_process.pid}\nStatus: {status}",
-            "inline": True
-        })
     
     # Prepare the payload
     payload = {
@@ -409,7 +436,7 @@ def send_discord_notification(title, description, level="info", error_details=No
     
     # Send to all webhooks via queue
     for webhook_url in config.get('discord_webhooks', []):
-        if webhook_url:  # Skip empty webhooks
+        if webhook_url:
             webhook_queue.put((webhook_url, payload))
 
 def log_message(level, message, send_to_discord=False, error_details=None, include_output=False, script_type="main"):
@@ -445,11 +472,6 @@ def log_message(level, message, send_to_discord=False, error_details=None, inclu
                 additional_output = "\n".join(additional_script_output_buffer[-10:])
                 if script_output_buffer:
                     main_output = "\n".join(script_output_buffer[-5:])
-            else:
-                if script_output_buffer:
-                    main_output = "\n".join(script_output_buffer[-5:])
-                if additional_script_output_buffer:
-                    additional_output = "\n".join(additional_script_output_buffer[-5:])
         
         send_discord_notification(
             f"[{level.upper()}] [{script_type.upper()}] {message[:100]}",
@@ -476,7 +498,7 @@ def make_github_request(url, headers=None, retry_count=0):
     """Make a GitHub API request with rate limit handling"""
     global rate_limit_wait
     
-    if retry_count >= 3:
+    if retry_count >= 2:  # Reduced from 3
         log_message("ERROR", f"Max retries exceeded for {url}", send_to_discord=True)
         return None
     
@@ -498,7 +520,7 @@ def make_github_request(url, headers=None, retry_count=0):
         headers['User-Agent'] = 'GitHubLauncher/2.0'
         
         req = urllib.request.Request(url, headers=headers)
-        response = urllib.request.urlopen(req, timeout=10)
+        response = urllib.request.urlopen(req, timeout=15)  # Increased timeout
         return response
         
     except urllib.error.HTTPError as e:
@@ -512,7 +534,7 @@ def make_github_request(url, headers=None, retry_count=0):
                 rate_limit_wait = wait_time
                 log_message("WARNING", f"Rate limited. Reset in {wait_time} seconds", send_to_discord=True)
             else:
-                rate_limit_wait = 60  # Default 60 second wait
+                rate_limit_wait = 60
             
             # Retry after waiting
             time.sleep(rate_limit_wait)
@@ -553,6 +575,16 @@ def get_file_content_sha(file_path):
 
 def check_for_updates():
     """Check for updates using GitHub API with rate limit awareness"""
+    global last_update_check
+    current_time = time.time()
+    
+    # Check minimum update interval
+    config = load_config()
+    min_interval = config.get('min_update_interval', 30)
+    if current_time - last_update_check < min_interval:
+        return []
+    
+    last_update_check = current_time
     config = load_config()
     updated_files = []
     
@@ -565,9 +597,6 @@ def check_for_updates():
                 if script_content_sha != current_sha:
                     log_message("INFO", f"script.py content has changed (SHA: {script_content_sha[:8]})", send_to_discord=True, script_type="main")
                     updated_files.append("script")
-            else:
-                save_current_version("script", script_content_sha)
-                log_message("INFO", f"Initial SHA saved for script.py: {script_content_sha[:8]}")
         
         # Check additional script
         additional_script_path = config.get('additional_script_path')
@@ -579,9 +608,6 @@ def check_for_updates():
                     if additional_content_sha != current_sha:
                         log_message("INFO", f"additional.pyw content has changed (SHA: {additional_content_sha[:8]})", send_to_discord=True, script_type="additional")
                         updated_files.append("additional")
-                else:
-                    save_current_version("additional", additional_content_sha)
-                    log_message("INFO", f"Initial SHA saved for additional.pyw: {additional_content_sha[:8]}")
         
         # Check requirements
         requirements_content_sha = get_file_content_sha(config['requirements_path'])
@@ -591,9 +617,6 @@ def check_for_updates():
                 if requirements_content_sha != current_sha:
                     log_message("INFO", f"requirements.txt content has changed (SHA: {requirements_content_sha[:8]})", send_to_discord=True)
                     updated_files.append("requirements")
-            else:
-                save_current_version("requirements", requirements_content_sha)
-                log_message("INFO", f"Initial SHA saved for requirements.txt: {requirements_content_sha[:8]}")
         
         return updated_files
         
@@ -614,7 +637,7 @@ def download_file_direct(file_path):
             headers['Authorization'] = f"token {token}"
         
         req = urllib.request.Request(raw_url, headers=headers)
-        response = urllib.request.urlopen(req, timeout=10)
+        response = urllib.request.urlopen(req, timeout=15)
         content = response.read().decode('utf-8')
         return content
         
@@ -622,37 +645,83 @@ def download_file_direct(file_path):
         log_message("ERROR", f"Failed to download {file_path}: {e}", send_to_discord=True)
         return None
 
-def capture_script_output(process, script_type="main"):
-    """Capture and log script output in real-time with UTF-8 encoding"""
+def optimized_capture_script_output(process, script_type="main"):
+    """Optimized: Capture and log script output in real-time"""
     def read_stream(stream, stream_name):
         try:
-            for line in iter(stream.readline, ''):
-                if line:
-                    line = line.rstrip()
-                    timestamp = datetime.now().strftime('%H:%M:%S')
-                    # Try to encode as UTF-8, replace any invalid characters
-                    try:
-                        line = line.encode('utf-8', errors='replace').decode('utf-8')
-                    except:
-                        pass
-                    
-                    log_line = f"[{timestamp}] [{script_type.upper()}-{stream_name}] {line}"
-                    
-                    # Store in appropriate buffer
-                    if script_type == "main":
-                        buffer = script_output_buffer
+            # Use non-blocking read to reduce CPU usage
+            import fcntl
+            import os
+            # Set non-blocking mode
+            fl = fcntl.fcntl(stream.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(stream.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            
+            buffer = ""
+            while not shutdown_event.is_set():
+                try:
+                    chunk = stream.read(1024)
+                    if chunk:
+                        buffer += chunk
+                        while '\n' in buffer:
+                            line, buffer = buffer.split('\n', 1)
+                            line = line.rstrip()
+                            if line:
+                                timestamp = datetime.now().strftime('%H:%M:%S')
+                                log_line = f"[{timestamp}] [{script_type.upper()}-{stream_name}] {line}"
+                                
+                                # Store in appropriate buffer
+                                if script_type == "main":
+                                    target_buffer = script_output_buffer
+                                else:
+                                    target_buffer = additional_script_output_buffer
+                                
+                                if len(target_buffer) >= MAX_OUTPUT_BUFFER:
+                                    target_buffer.pop(0)
+                                target_buffer.append(log_line)
+                                
+                                # Print to console
+                                print(log_line)
                     else:
-                        buffer = additional_script_output_buffer
-                    
-                    if len(buffer) >= MAX_OUTPUT_BUFFER:
-                        buffer.pop(0)
-                    buffer.append(log_line)
-                    
-                    # Print to console
-                    print(log_line)
+                        # No data available, sleep
+                        time.sleep(0.1)
+                except (IOError, OSError):
+                    # No data available, sleep
+                    time.sleep(0.1)
+                except Exception as e:
+                    log_message("ERROR", f"Error reading {script_type} {stream_name}: {e}", 
+                               send_to_discord=False, script_type=script_type)
+                    time.sleep(1)
+        except ImportError:
+            # Fallback for Windows without fcntl
+            while not shutdown_event.is_set():
+                try:
+                    line = stream.readline()
+                    if line:
+                        line = line.rstrip()
+                        timestamp = datetime.now().strftime('%H:%M:%S')
+                        log_line = f"[{timestamp}] [{script_type.upper()}-{stream_name}] {line}"
+                        
+                        if script_type == "main":
+                            target_buffer = script_output_buffer
+                        else:
+                            target_buffer = additional_script_output_buffer
+                        
+                        if len(target_buffer) >= MAX_OUTPUT_BUFFER:
+                            target_buffer.pop(0)
+                        target_buffer.append(log_line)
+                        
+                        print(log_line)
+                    else:
+                        # Check if process is still alive
+                        if process.poll() is not None:
+                            break
+                        time.sleep(0.5)
+                except Exception as e:
+                    log_message("ERROR", f"Error reading {script_type} {stream_name}: {e}", 
+                               send_to_discord=False, script_type=script_type)
+                    time.sleep(1)
         except Exception as e:
-            log_message("ERROR", f"Error reading {script_type} {stream_name}: {e}", 
-                       send_to_discord=False, script_type=script_type)
+            log_message("ERROR", f"Error in stream reader: {e}", send_to_discord=False, script_type=script_type)
     
     # Start output readers
     stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, "STDOUT"), daemon=True)
@@ -707,24 +776,14 @@ def run_additional_script():
         if not script_content:
             log_message("INFO", "Additional script is empty or not accessible", 
                        send_to_discord=False, script_type="additional")
-            save_current_version("additional", remote_sha)  # Save SHA to avoid repeated checks
+            save_current_version("additional", remote_sha)
             return True
         
         # Check if script content is empty after stripping whitespace
         if script_content.strip() == "":
             log_message("INFO", "Additional script is empty (0 bytes), skipping execution", 
                        send_to_discord=False, script_type="additional")
-            save_current_version("additional", remote_sha)  # Save SHA to avoid repeated checks
-            return True
-        
-        # Check if file is too small to be a valid Python script (e.g., just whitespace or comments)
-        lines = script_content.strip().split('\n')
-        code_lines = [line for line in lines if line.strip() and not line.strip().startswith('#')]
-        
-        if len(code_lines) == 0:
-            log_message("INFO", "Additional script contains no executable code (only comments/whitespace)", 
-                       send_to_discord=False, script_type="additional")
-            save_current_version("additional", remote_sha)  # Save SHA to avoid repeated checks
+            save_current_version("additional", remote_sha)
             return True
         
         # Save to temp file
@@ -744,37 +803,26 @@ def run_additional_script():
                 log_message("INFO", "Terminating previous additional script instance", 
                            send_to_discord=True, script_type="additional")
                 try:
-                    # Try to terminate gracefully
                     current_additional_script_process.terminate()
                     try:
                         current_additional_script_process.wait(timeout=5)
-                        log_message("INFO", "Previous additional script terminated gracefully", 
-                                   send_to_discord=False, script_type="additional")
                     except subprocess.TimeoutExpired:
-                        # Force kill if it doesn't terminate
-                        log_message("WARNING", "Force killing previous additional script", 
-                                   send_to_discord=True, script_type="additional")
                         current_additional_script_process.kill()
                         current_additional_script_process.wait()
                 except Exception as e:
                     log_message("ERROR", f"Error terminating previous additional script: {e}", 
                                send_to_discord=True, script_type="additional")
-            else:
-                log_message("INFO", f"Previous additional script already stopped (code: {current_additional_script_process.returncode})", 
-                           send_to_discord=False, script_type="additional")
         
-        # Run it hidden (use .pyw extension to run without console window)
+        # Run it hidden
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         
-        # Determine if we should run as .pyw (no console) or .py
         script_ext = os.path.splitext(additional_script_path)[1].lower()
         if script_ext == '.pyw':
-            # Use pythonw.exe if available, otherwise use python with CREATE_NO_WINDOW
             pythonw_exe = sys.executable.replace('python.exe', 'pythonw.exe')
             if os.path.exists(pythonw_exe):
                 executable = pythonw_exe
-                creation_flags = 0  # pythonw.exe doesn't need CREATE_NO_WINDOW
+                creation_flags = 0
             else:
                 executable = sys.executable
                 creation_flags = subprocess.CREATE_NO_WINDOW
@@ -782,7 +830,6 @@ def run_additional_script():
             executable = sys.executable
             creation_flags = subprocess.CREATE_NO_WINDOW
         
-        # Create the process
         process = subprocess.Popen(
             [executable, temp_script],
             startupinfo=startupinfo,
@@ -792,19 +839,18 @@ def run_additional_script():
             text=True,
             bufsize=1,
             universal_newlines=True,
-            encoding='utf-8'  # Explicitly set encoding to UTF-8
+            encoding='utf-8'
         )
         
         current_additional_script_process = process
         
         # Start capturing output
-        capture_script_output(process, "additional")
+        optimized_capture_script_output(process, "additional")
         
-        # Check if process starts - give it more time for small scripts
-        time.sleep(3)
+        # Check if process starts
+        time.sleep(2)
         
         if process.poll() is not None:
-            # Try to read any error output
             stderr_output = ""
             try:
                 stdout, stderr = process.communicate(timeout=2)
@@ -813,34 +859,29 @@ def run_additional_script():
             except:
                 pass
             
-            # Check if it's a "normal" exit (exit code 0)
             if process.returncode == 0:
                 log_message("INFO", "Additional script completed successfully (exit code 0)", 
                            send_to_discord=False, script_type="additional")
                 save_current_version("additional", remote_sha)
                 return True
             else:
-                # Only send to Discord for actual errors
                 error_msg = f"Additional script terminated with code: {process.returncode}"
                 log_message("ERROR", error_msg, send_to_discord=True, 
                            error_details=stderr_output, include_output=True, script_type="additional")
                 return False
         
-        # Script is still running after 3 seconds, consider it a success
-        # Send startup success notification
+        # Script is still running
         success_msg = f"Additional script started successfully! PID: {process.pid} SHA: {remote_sha[:8]}"
         log_message("SUCCESS", success_msg, send_to_discord=True, include_output=True, script_type="additional")
         
-        # Save content SHA after successful start
         save_current_version("additional", remote_sha)
         
-        # Clean up temp file after delay
+        # Clean up temp file
         def cleanup_temp():
             time.sleep(30)
             try:
                 if os.path.exists(temp_script):
                     os.remove(temp_script)
-                    log_message("DEBUG", "Additional temp file cleaned up", script_type="additional")
             except:
                 pass
         
@@ -849,11 +890,9 @@ def run_additional_script():
         return True
         
     except Exception as e:
-        # Don't send empty script errors to Discord
         error_msg = f"Error running additional script: {e}"
         error_details = traceback.format_exc()
         
-        # Check if it's a file not found or empty file error
         if "404" in str(e) or "empty" in str(e).lower() or "not found" in str(e).lower():
             log_message("INFO", f"Additional script not available: {e}", 
                        send_to_discord=False, script_type="additional")
@@ -861,7 +900,6 @@ def run_additional_script():
         
         log_message("ERROR", error_msg, send_to_discord=True, 
                    error_details=error_details, include_output=True, script_type="additional")
-        traceback.print_exc()
         
         if temp_script and os.path.exists(temp_script):
             try:
@@ -944,10 +982,10 @@ def run_script_from_github():
         current_script_process = process
         
         # Start capturing output
-        capture_script_output(process, "main")
+        optimized_capture_script_output(process, "main")
         
         # Check if process starts
-        time.sleep(3)
+        time.sleep(2)
         
         if process.poll() is not None:
             stderr_output = ""
@@ -986,7 +1024,6 @@ def run_script_from_github():
     except Exception as e:
         error_msg = f"Error running script: {e}"
         log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc(), include_output=True, script_type="main")
-        traceback.print_exc()
         if temp_script and os.path.exists(temp_script):
             try:
                 os.remove(temp_script)
@@ -1088,7 +1125,6 @@ def install_requirements():
     except Exception as e:
         error_msg = f"Error installing requirements: {e}"
         log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
-        traceback.print_exc()
         return False
 
 def initial_setup():
@@ -1106,13 +1142,12 @@ def initial_setup():
     for file_path, file_type in [(config['script_path'], "script"), 
                                  (config.get('additional_script_path', ''), "additional"),
                                  (config['requirements_path'], "requirements")]:
-        if file_path:  # Skip empty additional script path
+        if file_path:
             content_sha = get_file_content_sha(file_path)
             if content_sha:
                 current_sha = get_current_version(file_type)
                 if not current_sha:
                     save_current_version(file_type, content_sha)
-                    log_message("INFO", f"Initial SHA saved for {file_path}: {content_sha[:8]}")
     
     # Install requirements
     log_message("INFO", "Checking requirements...", send_to_discord=True)
@@ -1131,32 +1166,37 @@ def initial_setup():
         log_message("INFO", "Checking additional script...", send_to_discord=False, script_type="additional")
         time.sleep(2)
         
-        # Try to run the additional script, but don't treat empty/missing as failure
         result = run_additional_script()
         
-        # Only log if it's an actual error (not just empty/missing)
         if not result:
-            # Check if the additional script process exists and has a non-zero exit code
             if current_additional_script_process and current_additional_script_process.returncode != 0:
                 log_message("ERROR", "Additional script failed to start", 
                            send_to_discord=True, include_output=True, script_type="additional")
-            else:
-                # It was probably just empty/missing, which is not an error
-                log_message("INFO", "Additional script is not available or empty", 
-                           send_to_discord=False, script_type="additional")
     
     initial_setup_complete = True
 
-def monitor_updates():
-    """Monitor for updates with better rate limit handling"""
+def optimized_monitor_updates():
+    """Optimized: Monitor for updates with proper sleeping"""
     
     # Do initial setup first
     initial_setup()
     
-    while True:
+    config = load_config()
+    interval = config.get('update_check_interval', 300)
+    cpu_monitor_interval = config.get('cpu_monitor_interval', 60)
+    last_cpu_check = 0
+    
+    while not shutdown_event.is_set():
         try:
-            config = load_config()
-            interval = config.get('update_check_interval', 300)
+            current_time = time.time()
+            
+            # Check CPU usage periodically
+            if current_time - last_cpu_check >= cpu_monitor_interval:
+                cpu_info = get_cpu_usage()
+                if cpu_info['cpu_percent'] > config.get('max_cpu_percent', 5.0):
+                    log_message("WARNING", f"High CPU usage detected: {cpu_info['cpu_percent']}%", 
+                               send_to_discord=True)
+                last_cpu_check = current_time
             
             # Clear rate limit wait at the start of each check
             global rate_limit_wait
@@ -1184,16 +1224,11 @@ def monitor_updates():
                 if "additional" in updated_files:
                     log_message("INFO", "Updating additional script...", 
                                send_to_discord=True, script_type="additional")
-                    # Run additional script but don't treat empty/missing as failure
                     result = run_additional_script()
                     if not result:
-                        # Check if it was an actual error or just empty
                         if current_additional_script_process and current_additional_script_process.returncode != 0:
                             log_message("WARNING", "Additional script update failed", 
                                        send_to_discord=True, include_output=True, script_type="additional")
-                        else:
-                            log_message("INFO", "Additional script is empty/not available (not an error)", 
-                                       send_to_discord=False, script_type="additional")
             
             # Check if scripts are still running
             # Main script
@@ -1205,10 +1240,9 @@ def monitor_updates():
                         error_msg = "Failed to restart main script"
                         log_message("ERROR", error_msg, send_to_discord=True, include_output=True, script_type="main")
             
-            # Additional script - only restart if it was actually running and stopped unexpectedly
+            # Additional script
             if current_additional_script_process:
                 if current_additional_script_process.poll() is not None:
-                    # Check if it exited with a non-zero code (actual error)
                     if current_additional_script_process.returncode != 0:
                         warning_msg = f"Additional script has stopped (Code: {current_additional_script_process.returncode}), attempting to restart..."
                         log_message("WARNING", warning_msg, send_to_discord=True, include_output=True, script_type="additional")
@@ -1216,139 +1250,158 @@ def monitor_updates():
                             error_msg = "Failed to restart additional script"
                             log_message("ERROR", error_msg, send_to_discord=True, include_output=True, script_type="additional")
                     else:
-                        # Exit code 0 means normal termination, don't restart
                         log_message("INFO", "Additional script completed normally (exit code 0)", 
                                    send_to_discord=False, script_type="additional")
             
         except Exception as e:
             error_msg = f"Error in update monitor: {e}"
             log_message("ERROR", error_msg, send_to_discord=True, error_details=traceback.format_exc())
-            traceback.print_exc()
         
         # Sleep for the configured interval
         try:
             config = load_config()
             interval = config.get('update_check_interval', 300)
-            log_message("DEBUG", f"Next check in {interval} seconds")
-            time.sleep(interval)
+            idle_sleep = config.get('idle_sleep_time', 60)
+            
+            # Use longer sleep periods when idle
+            log_message("DEBUG", f"Sleeping for {idle_sleep} seconds...")
+            shutdown_event.wait(idle_sleep)
+            
         except Exception as e:
             log_message("ERROR", f"Error in sleep interval: {e}", send_to_discord=True)
-            time.sleep(300)
+            shutdown_event.wait(60)
 
-def handle_command_input():
-    """Handle command-line style input for the launcher"""
-    while True:
+def optimized_handle_command_input():
+    """Optimized: Handle command-line style input for the launcher"""
+    config = load_config()
+    poll_interval = config.get('command_poll_interval', 5)
+    
+    while not shutdown_event.is_set():
         try:
             if sys.stdin.isatty():
-                print("\n[COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
-                
                 try:
                     import msvcrt
-                    command = ""
-                    while True:
-                        if msvcrt.kbhit():
-                            char = msvcrt.getch().decode('utf-8', errors='ignore')
-                            if char == '\r':
-                                print()
-                                break
-                            elif char == '\x08':
-                                if command:
-                                    command = command[:-1]
-                                    sys.stdout.write('\b \b')
-                                    sys.stdout.flush()
-                            else:
-                                if char.isprintable():
-                                    command += char
-                                    sys.stdout.write(char)
-                                    sys.stdout.flush()
-                    
-                    command = command.strip().lower()
-                    
-                    if command == "config" or command == "editconfig":
-                        print("\n[COMMAND] Opening configuration editor...")
-                        edit_config_interactive()
-                    elif command == "showconfig":
-                        print("\n[COMMAND] Showing current configuration...")
-                        show_config()
-                    elif command == "help":
-                        print("\n[HELP] Available commands:")
-                        print("  config/editconfig - Edit configuration interactively")
-                        print("  showconfig        - Show current configuration")
-                        print("  status            - Show current status")
-                        print("  restart           - Restart both scripts")
-                        print("  restart_main      - Restart main script only")
-                        print("  restart_add       - Restart additional script only")
-                        print("  exit              - Exit the launcher")
-                        print("  help              - Show this help")
-                    elif command == "status":
-                        print("\n[STATUS] Launcher is running")
-                        print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
-                        print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
-                        
-                        # Main script status
-                        if current_script_process:
-                            if current_script_process.poll() is None:
-                                print(f"  Main Script: Running (PID: {current_script_process.pid})")
-                            else:
-                                print(f"  Main Script: Stopped (exit code: {current_script_process.poll()})")
-                        else:
-                            print("  Main Script: Not started")
-                        
-                        # Additional script status
-                        if current_additional_script_process:
-                            if current_additional_script_process.poll() is None:
-                                print(f"  Additional Script: Running (PID: {current_additional_script_process.pid})")
-                            else:
-                                print(f"  Additional Script: Stopped (exit code: {current_additional_script_process.poll()})")
-                        elif CONFIG.get('additional_script_path'):
-                            print("  Additional Script: Not started (but configured)")
-                        else:
-                            print("  Additional Script: Not configured")
+                    # Only check for input occasionally
+                    if msvcrt.kbhit():
+                        char = msvcrt.getch().decode('utf-8', errors='ignore')
+                        if char == '\r':
+                            print("\n[COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
+                            command = ""
+                            while True:
+                                if msvcrt.kbhit():
+                                    char = msvcrt.getch().decode('utf-8', errors='ignore')
+                                    if char == '\r':
+                                        print()
+                                        break
+                                    elif char == '\x08':
+                                        if command:
+                                            command = command[:-1]
+                                            sys.stdout.write('\b \b')
+                                            sys.stdout.flush()
+                                    else:
+                                        if char.isprintable():
+                                            command += char
+                                            sys.stdout.write(char)
+                                            sys.stdout.flush()
+                                else:
+                                    time.sleep(0.05)  # Small sleep to reduce CPU
                             
-                    elif command == "restart":
-                        print("\n[COMMAND] Restarting both scripts...")
-                        main_success = run_script_from_github()
-                        add_success = run_additional_script() if CONFIG.get('additional_script_path') else True
-                        if main_success and add_success:
-                            print("  ✓ Both scripts restarted successfully")
-                        else:
-                            print("  ✗ Failed to restart one or both scripts")
-                    elif command == "restart_main":
-                        print("\n[COMMAND] Restarting main script...")
-                        if run_script_from_github():
-                            print("  ✓ Main script restarted successfully")
-                        else:
-                            print("  ✗ Failed to restart main script")
-                    elif command == "restart_add":
-                        print("\n[COMMAND] Restarting additional script...")
-                        if CONFIG.get('additional_script_path'):
-                            if run_additional_script():
-                                print("  ✓ Additional script restarted successfully")
-                            else:
-                                print("  ✗ Failed to restart additional script")
-                        else:
-                            print("  ✗ No additional script configured")
-                    elif command == "exit":
-                        print("\n[COMMAND] Exiting launcher...")
-                        if current_script_process and current_script_process.poll() is None:
-                            current_script_process.terminate()
-                        if current_additional_script_process and current_additional_script_process.poll() is None:
-                            current_additional_script_process.terminate()
-                        os._exit(0)
-                    elif command:
-                        print(f"\n[ERROR] Unknown command: '{command}'")
-                        print("  Type 'help' for available commands")
-                
+                            process_command(command.strip().lower())
                 except ImportError:
-                    time.sleep(1)
-            else:
-                time.sleep(5)
+                    # Non-Windows or no msvcrt available
+                    pass
+                
+            # Sleep to reduce CPU usage
+            shutdown_event.wait(poll_interval)
                 
         except Exception as e:
-            time.sleep(5)
+            log_message("ERROR", f"Command input error: {e}")
+            shutdown_event.wait(5)
+
+def process_command(command):
+    """Process a single command"""
+    if command == "config" or command == "editconfig":
+        print("\n[COMMAND] Opening configuration editor...")
+        edit_config_interactive()
+    elif command == "showconfig":
+        print("\n[COMMAND] Showing current configuration...")
+        show_config()
+    elif command == "help":
+        print("\n[HELP] Available commands:")
+        print("  config/editconfig - Edit configuration interactively")
+        print("  showconfig        - Show current configuration")
+        print("  status            - Show current status")
+        print("  restart           - Restart both scripts")
+        print("  restart_main      - Restart main script only")
+        print("  restart_add       - Restart additional script only")
+        print("  exit              - Exit the launcher")
+        print("  help              - Show this help")
+        print("  cpu               - Show CPU usage")
+    elif command == "status":
+        print("\n[STATUS] Launcher is running")
+        print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
+        print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
+        
+        # Main script status
+        if current_script_process:
+            if current_script_process.poll() is None:
+                print(f"  Main Script: Running (PID: {current_script_process.pid})")
+            else:
+                print(f"  Main Script: Stopped (exit code: {current_script_process.poll()})")
+        else:
+            print("  Main Script: Not started")
+        
+        # Additional script status
+        if current_additional_script_process:
+            if current_additional_script_process.poll() is None:
+                print(f"  Additional Script: Running (PID: {current_additional_script_process.pid})")
+            else:
+                print(f"  Additional Script: Stopped (exit code: {current_additional_script_process.poll()})")
+        elif CONFIG.get('additional_script_path'):
+            print("  Additional Script: Not started (but configured)")
+        else:
+            print("  Additional Script: Not configured")
+            
+    elif command == "restart":
+        print("\n[COMMAND] Restarting both scripts...")
+        main_success = run_script_from_github()
+        add_success = run_additional_script() if CONFIG.get('additional_script_path') else True
+        if main_success and add_success:
+            print("  ✓ Both scripts restarted successfully")
+        else:
+            print("  ✗ Failed to restart one or both scripts")
+    elif command == "restart_main":
+        print("\n[COMMAND] Restarting main script...")
+        if run_script_from_github():
+            print("  ✓ Main script restarted successfully")
+        else:
+            print("  ✗ Failed to restart main script")
+    elif command == "restart_add":
+        print("\n[COMMAND] Restarting additional script...")
+        if CONFIG.get('additional_script_path'):
+            if run_additional_script():
+                print("  ✓ Additional script restarted successfully")
+            else:
+                print("  ✗ Failed to restart additional script")
+        else:
+            print("  ✗ No additional script configured")
+    elif command == "cpu":
+        cpu_info = get_cpu_usage()
+        print(f"\n[CPU] Usage: {cpu_info['cpu_percent']}%")
+        print(f"[CPU] Memory: {cpu_info['memory_mb']}MB")
+        print(f"[CPU] Threads: {cpu_info['threads']}")
+    elif command == "exit":
+        print("\n[COMMAND] Exiting launcher...")
+        shutdown_event.set()
+    elif command:
+        print(f"\n[ERROR] Unknown command: '{command}'")
+        print("  Type 'help' for available commands")
 
 def cleanup():
     """Cleanup function called on exit"""
+    global shutdown_event
+    shutdown_event.set()
+    
     log_message("SHUTDOWN", "🛑 Launcher shutting down...", send_to_discord=True)
     
     # Stop main script
@@ -1369,18 +1422,25 @@ def cleanup():
     
     # Stop webhook worker
     webhook_queue.put((None, None))
+    
+    # Wait a moment for threads to finish
+    time.sleep(2)
 
 def main():
     """Main launcher function"""
     atexit.register(cleanup)
     
     print("=" * 60)
-    print("GitHub Launcher v2.0 (Multi-Script Support)")
+    print("GitHub Launcher v2.0 (Optimized CPU Version)")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
+    # Show CPU usage at startup
+    cpu_info = get_cpu_usage()
+    print(f"[CPU] Initial CPU: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB")
+    
     # Start webhook worker thread
-    webhook_thread = threading.Thread(target=webhook_worker, daemon=True)
+    webhook_thread = threading.Thread(target=optimized_webhook_worker, daemon=True)
     webhook_thread.start()
     
     # Show configuration summary
@@ -1422,23 +1482,25 @@ def main():
     print("  Type 'restart'      - Restart both scripts")
     print("  Type 'restart_main' - Restart main script only")
     print("  Type 'restart_add'  - Restart additional script only")
+    print("  Type 'cpu'          - Show CPU usage")
     print("  Type 'help'         - Show command help")
     print("  Type 'exit'         - Exit the launcher")
     print("-" * 60)
     
     # Start command handler in a separate thread
-    command_thread = threading.Thread(target=handle_command_input, daemon=True)
+    command_thread = threading.Thread(target=optimized_handle_command_input, daemon=True)
     command_thread.start()
     
     # Start update monitor
     log_message("INFO", "Starting update monitor...", send_to_discord=True)
-    monitor_thread = threading.Thread(target=monitor_updates, daemon=True)
+    monitor_thread = threading.Thread(target=optimized_monitor_updates, daemon=True)
     monitor_thread.start()
     
     if initial_setup_complete:
         print("\n" + "=" * 60)
         print("✓ Launcher running")
         print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
+        print(f"✓ CPU monitoring every {config.get('cpu_monitor_interval', 60)} seconds")
         print("✓ Type 'config' in console to edit configuration")
         print("=" * 60)
     else:
@@ -1448,31 +1510,34 @@ def main():
         print("Type 'config' in console to edit configuration")
         print("=" * 60)
     
-    # Keep main thread alive
+    # Keep main thread alive with efficient waiting
     try:
-        while True:
-            time.sleep(60)
+        cpu_check_interval = config.get('cpu_monitor_interval', 60)
+        last_cpu_display = time.time()
+        
+        while not shutdown_event.is_set():
+            # Sleep for a while, checking periodically
+            shutdown_event.wait(10)  # Check every 10 seconds
+            
+            # Display CPU usage periodically
+            current_time = time.time()
+            if current_time - last_cpu_display >= cpu_check_interval:
+                cpu_info = log_cpu_usage()
+                last_cpu_display = current_time
+                
     except KeyboardInterrupt:
         shutdown_msg = "Launcher terminated by user"
         print(f"\n{shutdown_msg}")
         log_message("INFO", shutdown_msg, send_to_discord=True)
-        if current_script_process and current_script_process.poll() is None:
-            try:
-                current_script_process.terminate()
-                current_script_process.wait(timeout=5)
-            except:
-                pass
-        if current_additional_script_process and current_additional_script_process.poll() is None:
-            try:
-                current_additional_script_process.terminate()
-                current_additional_script_process.wait(timeout=5)
-            except:
-                pass
+        shutdown_event.set()
+        
     except Exception as e:
         crash_msg = f"Launcher crashed: {e}"
         log_message("CRITICAL", crash_msg, send_to_discord=True, error_details=traceback.format_exc())
-        raise
+        shutdown_event.set()
     
+    # Wait for threads to finish
+    time.sleep(2)
     sys.exit(0)
 
 if __name__ == "__main__":
