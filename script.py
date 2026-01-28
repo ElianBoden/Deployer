@@ -106,8 +106,7 @@ TOGGLE_HOTKEY = "ctrl+alt+p"  # Alternative hotkey to toggle tracking
 
 # Discord Webhook Configuration (BOTH WEBHOOKS)
 DISCORD_WEBHOOKS = [
-    "https://discordapp.com/api/webhooks/1464318526650187836/JVj45KwndFltWM8WZeD3z9e0dlIipcbyQN7Fu_iAt5HpBn1O5f4t_r43koMeX3Dv73gF",
-    "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
+    "https://discordapp.com/api/webhooks/1466097880279552153/eRp81uXCWDPjtSTzuRn9zR1emJpt3LC6WwjPul_FBqWCTWVhQMxHw-cnMx1phDYJMCG5",
 ]
 SEND_SCREENSHOTS = True  # Set to False to disable screenshot sending
 SCREENSHOT_DELAY = 0.5   # Delay after detection before taking screenshot (seconds)
