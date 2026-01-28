@@ -179,7 +179,7 @@ def main():
         window.destroy()
     
     # Schedule window to close after 5 seconds
-    window.after(5000, close_window)
+    window.after(10000, close_window)
     
     # Print to console
     current_time = datetime.now().strftime('%H:%M:%S')
