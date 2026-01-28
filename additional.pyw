@@ -16,7 +16,7 @@ from typing import Optional, Tuple, Dict, Any
 
 CONFIG = {
     # Image Settings
-    "image_url": "https://images.unsplash.com/photo-1562860149-691401a306f8?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D",  # Leave empty for solid color, or provide image URL
+    "image_url": "https://images.unsplash.com/photo-1582266255765-fa5cf1a1d501?q=80&w=1170&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D,  # Leave empty for solid color, or provide image URL
     
     # Window Settings
     "window_size_percent": 0.5,  # 0.5 = 50% of screen, 1.0 = full screen, 0.0 = small window
