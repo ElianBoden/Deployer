@@ -454,14 +454,14 @@ def main():
     window.after(1500, trigger_eyes)
     
     # ===========================================
-    # FINAL EPIC SCARE SEQUENCE
+    # FINAL EPIC SCARE SEQUENCE - MODIFIED FOR 12 SECONDS
     # ===========================================
     
     def epic_final_scare():
-        """Epic final scare with full screen extension"""
+        """Epic final scare with full screen extension - 12 second version"""
         nonlocal animation_active, full_screen_photo
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [SCARE] Starting epic final scare sequence!")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [SCARE] Starting epic final scare sequence (12-second version)!")
         
         # Stop normal animations
         animation_active = False
@@ -480,12 +480,12 @@ def main():
                 return
             
             if step == 0:
-                # Phase 1: Intense shaking
+                # Phase 1: Intense shaking (reduced duration for 12-second total)
                 print("[SCARE] Phase 1: Intense shaking")
                 intense_shake(0)
                 
             elif step == 1:
-                # Phase 2: Rapid flicker
+                # Phase 2: Rapid flicker (reduced duration)
                 print("[SCARE] Phase 2: Rapid flicker")
                 rapid_flicker(0)
                 
@@ -495,13 +495,13 @@ def main():
                 extend_to_full_screen()
                 
             elif step == 3:
-                # Phase 4: Hold full screen scare
+                # Phase 4: Hold full screen scare (reduced duration)
                 print("[SCARE] Phase 4: Hold full screen")
-                window.after(1000, final_destroy)
+                window.after(600, final_destroy)
         
         def intense_shake(count=0):
-            if count >= 20 or not window.winfo_exists():
-                window.after(500, lambda: scare_sequence(1))
+            if count >= 15 or not window.winfo_exists():  # Reduced from 20
+                window.after(300, lambda: scare_sequence(1))
                 return
             
             # Extreme shaking
@@ -521,11 +521,11 @@ def main():
                 image_label.config(image=flicker_image)
                 image_label.image = flicker_image
             
-            window.after(50, lambda: intense_shake(count + 1))
+            window.after(60, lambda: intense_shake(count + 1))  # Slightly faster
         
         def rapid_flicker(count=0):
-            if count >= 15 or not window.winfo_exists():
-                window.after(300, lambda: scare_sequence(2))
+            if count >= 10 or not window.winfo_exists():  # Reduced from 15
+                window.after(200, lambda: scare_sequence(2))
                 return
             
             # Ultra-fast flicker between red and original
@@ -535,7 +535,7 @@ def main():
                 else:
                     image_label.config(image=original_photo)
             
-            window.after(60, lambda: rapid_flicker(count + 1))
+            window.after(50, lambda: rapid_flicker(count + 1))  # Faster flicker
         
         def extend_to_full_screen():
             """Smooth extension to full screen with terrifying image"""
@@ -557,9 +557,9 @@ def main():
             target_x = 0
             target_y = 0
             
-            # Animate expansion
+            # Animate expansion (faster for 12-second total)
             def expand_frame(frame=0):
-                if frame > 30 or not window.winfo_exists():
+                if frame > 25 or not window.winfo_exists():  # Reduced from 30
                     # Final frame: set to full screen
                     window.geometry(f"{target_width}x{target_height}+{target_x}+{target_y}")
                     
@@ -569,11 +569,11 @@ def main():
                         image_label.image = full_screen_photo
                         image_label.place(x=0, y=0, width=target_width, height=target_height)
                     
-                    window.after(800, lambda: scare_sequence(3))
+                    window.after(400, lambda: scare_sequence(3))  # Reduced wait
                     return
                 
                 # Calculate intermediate size (ease-out)
-                t = frame / 30
+                t = frame / 25  # Adjusted for new frame count
                 t = t * t  # Ease-out
                 
                 current_width = int(start_width + (target_width - start_width) * t)
@@ -618,21 +618,22 @@ def main():
             if window.winfo_exists():
                 window.destroy()
                 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Epic scare completed!")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] 12-second epic scare completed!")
                 
         except Exception as e:
             print(f"[ERROR] Final destroy error: {e}")
     
-    # Schedule epic scare after 15 seconds
-    window.after(15000, epic_final_scare)
+    # Schedule epic scare after 12 seconds TOTAL (adjusting for buildup time)
+    # We've had about 1 second of initial animations, so start final scare at 11 seconds
+    window.after(11000, epic_final_scare)
     
     # Print to console
     current_time = datetime.now().strftime('%H:%M:%S')
-    print(f"[{current_time}] [INFO] SCARY WINDOW ACTIVATED - ENHANCED VERSION")
+    print(f"[{current_time}] [INFO] SCARY WINDOW ACTIVATED - 12 SECOND VERSION")
     print(f"[{current_time}] [INFO] Screen size: {screen_width}x{screen_height}")
     print(f"[{current_time}] [INFO] Window size: {window_width}x{window_height}")
     print(f"[{current_time}] [INFO] Smooth shaking and pulsing animations active")
-    print(f"[{current_time}] [INFO] Epic full-screen scare in 15 seconds")
+    print(f"[{current_time}] [INFO] Epic full-screen scare in 12 seconds total")
     
     # Bind escape key to close window (for safety)
     def on_escape(event):
