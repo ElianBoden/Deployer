@@ -1,103 +1,100 @@
-# additional.pyw - Test script for GitHub Launcher
+# additional.pyw - Test script that shows a window for 5 seconds
+import tkinter as tk
 import time
-import random
-import sys
-import datetime
+from datetime import datetime
 
 def main():
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✅ Additional script started!")
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚀 Running random operations...")
+    # Create the main window
+    window = tk.Tk()
+    window.title("GitHub Launcher Test")
+    window.geometry("400x300")
+    window.configure(bg='#2b2b2b')
     
-    # Seed random with current time
-    random.seed(time.time())
+    # Center the window on screen
+    window.update_idletasks()
+    width = window.winfo_width()
+    height = window.winfo_height()
+    x = (window.winfo_screenwidth() // 2) - (width // 2)
+    y = (window.winfo_screenheight() // 2) - (height // 2)
+    window.geometry(f'{width}x{height}+{x}+{y}')
     
-    counter = 0
-    try:
-        while True:
-            counter += 1
-            
-            # Generate random activity
-            activity = random.choice([
-                "Generating random number...",
-                "Calculating Pi approximation...",
-                "Simulating CPU load...",
-                "Checking system time...",
-                "Performing memory test...",
-                "Running diagnostics...",
-                "Processing data...",
-                "Updating cache...",
-                "Validating input...",
-                "Optimizing performance..."
-            ])
-            
-            # Random number operations
-            num1 = random.randint(1, 100)
-            num2 = random.randint(1, 100)
-            operation = random.choice(['+', '-', '*', '/'])
-            
-            if operation == '+':
-                result = num1 + num2
-                operation_str = f"{num1} + {num2}"
-            elif operation == '-':
-                result = num1 - num2
-                operation_str = f"{num1} - {num2}"
-            elif operation == '*':
-                result = num1 * num2
-                operation_str = f"{num1} × {num2}"
-            else:  # division
-                if num2 != 0:
-                    result = num1 / num2
-                    operation_str = f"{num1} ÷ {num2}"
-                else:
-                    result = "undefined"
-                    operation_str = f"{num1} ÷ {num2}"
-            
-            # Random status message
-            status = random.choice([
-                "✅ Success",
-                "⚠️ Warning",
-                "ℹ️ Info",
-                "🔧 Processing",
-                "📊 Analyzing",
-                "🔍 Monitoring",
-                "⚡ Optimizing",
-                "🔄 Refreshing",
-                "🔐 Securing",
-                "📈 Reporting"
-            ])
-            
-            # Print the activity
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [{status}] {activity}")
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🧮 Calculation: {operation_str} = {result}")
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 📊 Iteration: {counter}, Memory Usage: {random.randint(10, 90)}%")
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ⏱️ Uptime: {counter * 10} seconds")
-            print("-" * 50)
-            
-            # Random sleep between 5 and 15 seconds
-            sleep_time = random.randint(5, 15)
-            time.sleep(sleep_time)
-            
-            # Random chance to simulate an error (1 in 20 iterations)
-            if random.random() < 0.05:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ⚠️ Simulated warning: Random warning occurred")
-            
-            # Random chance to simulate a restart (1 in 50 iterations)
-            if random.random() < 0.02:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🔄 Simulating restart...")
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ♻️ Restarting operations...")
-                print("=" * 60)
-                
-    except KeyboardInterrupt:
-        print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] 🛑 Script interrupted by user")
-    except Exception as e:
-        print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] ❌ Error occurred: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] 👋 Additional script stopping...")
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 📈 Total iterations completed: {counter}")
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🕒 Total runtime: {counter * 10} seconds")
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✅ Script completed successfully!")
+    # Add title label
+    title_label = tk.Label(
+        window, 
+        text="✅ Additional Script Test", 
+        font=("Arial", 18, "bold"),
+        fg="white",
+        bg="#2b2b2b"
+    )
+    title_label.pack(pady=30)
+    
+    # Add status label
+    status_label = tk.Label(
+        window,
+        text="This window will close in:",
+        font=("Arial", 12),
+        fg="white",
+        bg="#2b2b2b"
+    )
+    status_label.pack(pady=10)
+    
+    # Add countdown label
+    countdown_label = tk.Label(
+        window,
+        text="5 seconds",
+        font=("Arial", 24, "bold"),
+        fg="#00ff00",
+        bg="#2b2b2b"
+    )
+    countdown_label.pack(pady=20)
+    
+    # Add info text
+    info_text = tk.Text(
+        window,
+        height=5,
+        width=40,
+        bg="#3c3c3c",
+        fg="white",
+        font=("Arial", 10),
+        relief="flat",
+        borderwidth=0
+    )
+    info_text.pack(pady=10)
+    info_text.insert("1.0", "• Script started successfully!\n• Window will auto-close in 5 seconds\n• This confirms the launcher is working\n• Check Discord for notifications")
+    info_text.configure(state="disabled")
+    
+    # Add close button
+    close_button = tk.Button(
+        window,
+        text="Close Now",
+        command=window.destroy,
+        bg="#4CAF50",
+        fg="white",
+        font=("Arial", 12),
+        relief="raised",
+        borderwidth=2
+    )
+    close_button.pack(pady=10)
+    
+    # Function to update countdown
+    def update_countdown(seconds_left):
+        if seconds_left > 0:
+            countdown_label.config(text=f"{seconds_left} second{'s' if seconds_left > 1 else ''}")
+            window.after(1000, update_countdown, seconds_left - 1)
+        else:
+            window.destroy()
+    
+    # Start countdown
+    update_countdown(5)
+    
+    # Print to console (will be captured by launcher)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Test window created!")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🪟 Window will close in 5 seconds")
+    
+    # Run the main loop
+    window.mainloop()
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 👋 Test window closed successfully!")
 
 if __name__ == "__main__":
     main()
