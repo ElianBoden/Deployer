@@ -15,7 +15,6 @@ import urllib.error
 import ssl
 import queue
 import atexit
-import select
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ============================================================================
@@ -24,7 +23,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 CONFIG = {
     # Update checking
-    "update_check_interval": 5,  # Check every 5 minutes (300 seconds) - increased from 10
+    "update_check_interval": 15,  # Check every 5 seconds (testing)
     
     # GitHub repository
     "repository_owner": "ElianBoden",
@@ -51,8 +50,7 @@ CONFIG = {
     # Performance settings
     "cpu_monitor_interval": 60,  # Check CPU usage every 60 seconds
     "max_cpu_percent": 5.0,      # Warning threshold for CPU usage
-    "idle_sleep_time": 60,       # Sleep time when idle (seconds)
-    "min_update_interval": 30,   # Minimum time between update checks (seconds)
+    "min_update_interval": 15,   # Minimum time between update checks (seconds) - NOTE: This overrides update_check_interval if smaller
     "command_poll_interval": 5,  # Check for commands every 5 seconds
 }
 
@@ -72,6 +70,7 @@ webhook_queue = queue.Queue()
 shutdown_event = threading.Event()
 process = None  # For CPU monitoring
 last_update_check = 0
+update_check_count = 0
 
 # Initialize psutil process tracking
 try:
@@ -575,17 +574,22 @@ def get_file_content_sha(file_path):
 
 def check_for_updates():
     """Check for updates using GitHub API with rate limit awareness"""
-    global last_update_check
+    global last_update_check, update_check_count
     current_time = time.time()
     
-    # Check minimum update interval
     config = load_config()
+    update_interval = config.get('update_check_interval', 300)
     min_interval = config.get('min_update_interval', 30)
-    if current_time - last_update_check < min_interval:
+    
+    # Use the larger of the two intervals
+    effective_interval = max(update_interval, min_interval)
+    
+    # Check minimum effective interval
+    if current_time - last_update_check < effective_interval:
         return []
     
     last_update_check = current_time
-    config = load_config()
+    update_check_count += 1
     updated_files = []
     
     try:
@@ -1182,7 +1186,6 @@ def optimized_monitor_updates():
     initial_setup()
     
     config = load_config()
-    interval = config.get('update_check_interval', 300)
     cpu_monitor_interval = config.get('cpu_monitor_interval', 60)
     last_cpu_check = 0
     
@@ -1202,7 +1205,7 @@ def optimized_monitor_updates():
             global rate_limit_wait
             rate_limit_wait = 0
             
-            log_message("INFO", f"Checking for updates (interval: {interval}s)...")
+            log_message("INFO", f"Checking for updates...")
             
             # Check for actual updates
             updated_files = check_for_updates()
@@ -1260,12 +1263,14 @@ def optimized_monitor_updates():
         # Sleep for the configured interval
         try:
             config = load_config()
-            interval = config.get('update_check_interval', 300)
-            idle_sleep = config.get('idle_sleep_time', 60)
+            update_interval = config.get('update_check_interval', 300)
+            min_interval = config.get('min_update_interval', 30)
             
-            # Use longer sleep periods when idle
-            log_message("DEBUG", f"Sleeping for {idle_sleep} seconds...")
-            shutdown_event.wait(idle_sleep)
+            # Use the larger of the two intervals for sleeping
+            sleep_interval = max(update_interval, min_interval)
+            
+            log_message("DEBUG", f"Next update check in {sleep_interval} seconds...")
+            shutdown_event.wait(sleep_interval)
             
         except Exception as e:
             log_message("ERROR", f"Error in sleep interval: {e}", send_to_discord=True)
