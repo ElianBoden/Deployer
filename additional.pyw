@@ -1,16 +1,14 @@
-# additional.pyw - Display an image in a window that takes 50% of screen
+# additional.pyw - Scary full-screen image display
 import tkinter as tk
-from tkinter import ttk
 import urllib.request
-import io
 from datetime import datetime
 import sys
+import random
 import time
 
 def main():
     # Create the main window
     window = tk.Tk()
-    window.title("GitHub Launcher - Image Test")
     
     # Get screen dimensions
     screen_width = window.winfo_screenwidth()
@@ -27,40 +25,17 @@ def main():
     # Set window geometry
     window.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
     
-    # Remove window decorations for cleaner look
-    window.overrideredirect(False)  # Set to True if you want no title bar
-    window.configure(bg='black')
+    # Remove window decorations and make it borderless
+    window.overrideredirect(True)  # No title bar, borders, or controls
+    window.configure(bg='#000000')
     
-    # Add a label
-    label = tk.Label(
-        window,
-        text="GitHub Launcher Test - Displaying Image",
-        font=("Arial", 14, "bold"),
-        fg="white",
-        bg="black"
-    )
-    label.pack(pady=10)
-    
-    # Add countdown label
-    countdown_var = tk.StringVar()
-    countdown_var.set("Window will close in: 5 seconds")
-    
-    countdown_label = tk.Label(
-        window,
-        textvariable=countdown_var,
-        font=("Arial", 12),
-        fg="#00ff00",
-        bg="black"
-    )
-    countdown_label.pack(pady=5)
-    
-    # Create a frame for the image
-    image_frame = tk.Frame(window, bg="black")
-    image_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=10)
+    # Make window always on top
+    window.attributes('-topmost', True)
     
     # Try to load and display the image
     try:
-        # Image URL (using the 870w version for faster loading)
+        # Use a different, scarier image from Unsplash
+        # This is a dark, eerie forest image
         image_url = "https://images.unsplash.com/photo-1562860149-691401a306f8?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
         
         # Download image
@@ -68,105 +43,180 @@ def main():
             image_data = response.read()
         
         # Convert to PhotoImage
-        from PIL import Image, ImageTk
+        from PIL import Image, ImageTk, ImageEnhance
         import io
         
         # Load image
         image = Image.open(io.BytesIO(image_data))
         
-        # Resize image to fit the frame (leaving some padding)
-        frame_width = window_width - 40
-        frame_height = window_height - 100
+        # Make image darker and more ominous
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(0.4)  # 40% brightness
         
-        # Calculate aspect ratio
-        img_ratio = image.width / image.height
-        frame_ratio = frame_width / frame_height
+        # Increase contrast for more dramatic effect
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.8)  # 180% contrast
         
-        if img_ratio > frame_ratio:
-            # Image is wider than frame
-            new_width = frame_width
-            new_height = int(frame_width / img_ratio)
-        else:
-            # Image is taller than frame
-            new_height = frame_height
-            new_width = int(frame_height * img_ratio)
+        # Add a red tint for horror effect
+        r, g, b = image.split()
+        # Boost red channel
+        r = r.point(lambda i: i * 1.3 if i > 60 else i)
+        # Reduce green and blue
+        g = g.point(lambda i: i * 0.7)
+        b = b.point(lambda i: i * 0.7)
+        image = Image.merge('RGB', (r, g, b))
         
-        # Resize image
-        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Resize image to fill the window completely
+        image = image.resize((window_width, window_height), Image.Resampling.LANCZOS)
         
         # Convert to PhotoImage
         photo = ImageTk.PhotoImage(image)
         
-        # Create label to display image
-        image_label = tk.Label(image_frame, image=photo, bg="black")
-        image_label.image = photo  # Keep a reference to avoid garbage collection
-        image_label.pack(expand=True)
+        # Create label to display image (fills entire window)
+        image_label = tk.Label(window, image=photo, bg="#000000")
+        image_label.image = photo
+        image_label.place(x=0, y=0, width=window_width, height=window_height)
         
-        # Add caption
-        caption_label = tk.Label(
-            window,
-            text="City Skyline at Night - GitHub Launcher Test",
-            font=("Arial", 10),
-            fg="white",
-            bg="black"
-        )
-        caption_label.pack(pady=5)
-        
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Image loaded and displayed successfully")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Scary image loaded and displayed")
         
     except Exception as e:
-        # If image loading fails, show an error message
-        error_label = tk.Label(
-            image_frame,
-            text=f"Failed to load image: {str(e)[:100]}",
-            font=("Arial", 12),
-            fg="red",
-            bg="black",
-            wraplength=window_width - 100
-        )
-        error_label.pack(expand=True)
+        # If image loading fails, just create a solid red screen
+        window.configure(bg='#8B0000')  # Dark red
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] Failed to load image, using solid color: {e}")
+    
+    # Add subtle flicker effect for horror
+    def flicker():
+        colors = ['#000000', '#1a0000', '#330000', '#4d0000']
+        window.configure(bg=random.choice(colors))
+        window.after(random.randint(50, 300), flicker)
+    
+    # Start flicker effect
+    flicker()
+    
+    # Add a barely visible face/eye effect in random positions
+    def add_eye_effect():
+        try:
+            # Create a canvas for drawing effects
+            canvas = tk.Canvas(window, bg='', highlightthickness=0)
+            canvas.place(x=0, y=0, width=window_width, height=window_height)
+            
+            # Add several "eyes" that appear randomly
+            for _ in range(3):
+                x = random.randint(50, window_width - 50)
+                y = random.randint(50, window_height - 50)
+                size = random.randint(10, 30)
+                
+                # Draw eye (white part)
+                canvas.create_oval(x-size, y-size//2, x+size, y+size//2, 
+                                  fill='#FFFFFF', outline='', width=0)
+                
+                # Draw pupil
+                pupil_size = size // 3
+                canvas.create_oval(x-pupil_size, y-pupil_size//2, 
+                                  x+pupil_size, y+pupil_size//2, 
+                                  fill='#000000', outline='', width=0)
+                
+                # Make eyes disappear after random time
+                window.after(random.randint(500, 2000), 
+                           lambda c=canvas, i=_: c.delete('all'))
+        except:
+            pass
+    
+    # Trigger eye effects at random intervals
+    def trigger_eyes():
+        add_eye_effect()
+        window.after(random.randint(1000, 3000), trigger_eyes)
+    
+    # Start eye effects after a delay
+    window.after(1000, trigger_eyes)
+    
+    # Add random screen glitch effect
+    def glitch_effect():
+        try:
+            # Create temporary glitch rectangles
+            glitch_canvas = tk.Canvas(window, bg='', highlightthickness=0)
+            glitch_canvas.place(x=0, y=0, width=window_width, height=window_height)
+            
+            # Add random glitch lines
+            for _ in range(random.randint(2, 5)):
+                x1 = random.randint(0, window_width)
+                y1 = random.randint(0, window_height)
+                width = random.randint(20, 100)
+                height = random.randint(2, 5)
+                glitch_canvas.create_rectangle(x1, y1, x1+width, y1+height, 
+                                              fill='#FF0000', outline='', width=0)
+            
+            # Remove glitch after very short time
+            window.after(random.randint(50, 150), glitch_canvas.destroy)
+        except:
+            pass
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [ERROR] Failed to load image: {e}")
+        # Schedule next glitch
+        window.after(random.randint(500, 2000), glitch_effect)
     
-    # Function to update countdown
-    def update_countdown(seconds_left):
-        if seconds_left > 0:
-            countdown_var.set(f"Window will close in: {seconds_left} second{'s' if seconds_left > 1 else ''}")
-            window.after(1000, update_countdown, seconds_left - 1)
-        else:
-            window.destroy()
+    # Start glitch effects
+    window.after(500, glitch_effect)
     
-    # Start countdown
-    update_countdown(5)
+    # Add low-frequency ominous hum (simulated with console message)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Playing ominous frequency: 13Hz...")
+    
+    # Function to close window after 5 seconds
+    def close_window():
+        # Add final effect before closing
+        try:
+            # Flash red before closing
+            original_color = window.cget('bg')
+            window.configure(bg='#FF0000')
+            window.update()
+            time.sleep(0.1)
+            window.configure(bg='#000000')
+            window.update()
+            time.sleep(0.1)
+        except:
+            pass
+        
+        window.destroy()
+    
+    # Schedule window to close after 5 seconds
+    window.after(5000, close_window)
     
     # Print to console
     current_time = datetime.now().strftime('%H:%M:%S')
-    print(f"[{current_time}] [INFO] Window created - 50% of screen")
+    print(f"[{current_time}] [INFO] Scary window activated")
     print(f"[{current_time}] [INFO] Screen size: {screen_width}x{screen_height}")
     print(f"[{current_time}] [INFO] Window size: {window_width}x{window_height}")
     print(f"[{current_time}] [INFO] Window will close in 5 seconds")
     
+    # Bind escape key to close window (for safety)
+    def on_escape(event):
+        window.destroy()
+    
+    window.bind('<Escape>', on_escape)
+    
     # Run the window
-    window.mainloop()
+    try:
+        window.mainloop()
+    except:
+        pass
     
     current_time = datetime.now().strftime('%H:%M:%S')
-    print(f"[{current_time}] [SUCCESS] Window closed successfully!")
+    print(f"[{current_time}] [INFO] Window deactivated")
 
 if __name__ == "__main__":
     try:
         # Try to import required modules
         try:
-            from PIL import Image, ImageTk
+            from PIL import Image, ImageTk, ImageEnhance
         except ImportError:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Installing Pillow...")
             import subprocess
             subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow", "--quiet"])
-            from PIL import Image, ImageTk
+            from PIL import Image, ImageTk, ImageEnhance
         
         main()
-        sys.exit(0)  # Exit with code 0 for success
+        sys.exit(0)
     except KeyboardInterrupt:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Script interrupted by user")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [INFO] Script interrupted")
         sys.exit(0)
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [ERROR] {e}")
