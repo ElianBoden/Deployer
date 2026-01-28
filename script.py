@@ -1,4 +1,3 @@
-import time
 import threading
 import win32gui
 import pyautogui
