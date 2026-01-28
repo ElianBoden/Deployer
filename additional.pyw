@@ -1,5 +1,3 @@
-
-
 # additional.pyw - Scary full-screen image display (Configurable)
 import tkinter as tk
 import urllib.request
@@ -21,7 +19,7 @@ CONFIG = {
     
     # Window Settings
     "window_size_percent": 0.5,  # 0.5 = 50% of screen, 1.0 = full screen, 0.0 = small window
-    "window_position": "center",  # "center", "random", "top-left", "top-right", "bottom-left", "bottom-right"
+    "window_position": "top-left",  # "center", "random", "top-left", "top-right", "bottom-left", "bottom-right"
     "borderless": True,  # Remove window decorations
     "always_on_top": True,  # Keep window on top of others
     "background_color": "#000000",  # Fallback color if image fails
