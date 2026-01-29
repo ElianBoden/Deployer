@@ -3,92 +3,95 @@ import requests
 import time
 
 def create_troll_window():
-    """Create a fullscreen borderless window with images appearing one by one"""
+    """Create a fullscreen window with images appearing and disappearing in a queue"""
     
     # Create window
     root = tk.Tk()
-    root.title("")  # Empty title
+    root.title("")
     
     # Get screen dimensions
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     
-    # Set window to fullscreen WITHOUT overrideredirect
+    # Set window to fullscreen
     root.geometry(f"{screen_width}x{screen_height}+0+0")
-    root.configure(bg='black')
-    
-    # Try to remove window decorations (might not work on all systems)
-    try:
-        root.attributes('-fullscreen', True)
-    except:
-        pass
+    root.configure(bg='white')  # WHITE BACKGROUND
     
     # Make window stay on top
     root.attributes('-topmost', True)
     
-    # Try to load image
+    # Calculate cell size (10 columns x 5 rows = 50 positions)
+    cell_width = screen_width // 10
+    cell_height = screen_height // 5
+    
+    # Try to load and resize image
     img = None
     try:
         url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
         response = requests.get(url, timeout=5)
         
-        # Convert to PhotoImage
+        # Use PIL to resize image to fit cell
         from io import BytesIO
-        import base64
-        img_data = response.content
-        img = tk.PhotoImage(data=base64.b64encode(img_data))
+        from PIL import Image, ImageTk
+        
+        # Open and resize image to fit cell (with some padding)
+        pil_image = Image.open(BytesIO(response.content))
+        pil_image = pil_image.resize((cell_width - 4, cell_height - 4), Image.Resampling.LANCZOS)
+        
+        # Convert to PhotoImage
+        img = ImageTk.PhotoImage(pil_image)
         root.tk_image = img  # Keep reference
         
-        # Get image size
-        img_width = img.width()
-        img_height = img.height()
-        print(f"Image size: {img_width}x{img_height}")
+        print(f"Image resized to: {cell_width}x{cell_height}")
         
     except Exception as e:
         print(f"Image load failed: {e}")
         img = None
     
-    # Calculate positions (10x5 grid = 50 images)
+    # Create positions for 50 images (10 columns, 5 rows)
     positions = []
     for i in range(50):
         # Start from top-right (row 0, column 9)
         row = i // 10  # 0 to 4
         col = 9 - (i % 10)  # 9 to 0 (right to left)
         
-        # Calculate position
-        x = col * (screen_width // 10)
-        y = row * (screen_height // 5)
+        # Calculate position (centered in cell)
+        x = col * cell_width + 2  # +2 for padding
+        y = row * cell_height + 2  # +2 for padding
         
         positions.append((x, y))
     
+    # Create all 50 labels initially (hidden)
+    labels = []
+    for i in range(50):
+        if img:
+            label = tk.Label(root, image=img, bg='white')
+        else:
+            # Fallback: simple text
+            label = tk.Label(root, text="X", font=("Arial", 30), 
+                           fg='black', bg='white')  # BLACK TEXT ON WHITE
+        label.place(x=positions[i][0], y=positions[i][1])
+        label.lower()  # Hide initially
+        labels.append(label)
+    
     # Counter for displayed images
     images_displayed = 0
-    labels = []
     
     def show_next_image():
         nonlocal images_displayed
         
         if images_displayed >= 50:
-            # All images shown
+            # All images have been shown
             return
         
-        # Get position
-        x, y = positions[images_displayed]
+        # Show current image
+        labels[images_displayed].lift()
         
-        # Create label with image or fallback
-        if img:
-            label = tk.Label(root, image=img, bg='black')
-        else:
-            # Fallback: simple text
-            label = tk.Label(root, text="X", font=("Arial", 60), 
-                           fg='white', bg='black')
-        
-        # Place the label
-        label.place(x=x, y=y)
-        labels.append(label)
-        
-        # Update display
-        root.update()
+        # If we've shown 10 or more images, hide the (images_displayed - 9)th image
+        # This creates the sliding window effect
+        if images_displayed >= 10:
+            # Hide the image that's 10 positions back
+            labels[images_displayed - 10].lower()
         
         # Increment counter
         images_displayed += 1
@@ -96,6 +99,14 @@ def create_troll_window():
         # Show next image after 0.05 seconds
         if images_displayed < 50:
             root.after(50, show_next_image)
+        else:
+            # After showing all, start hiding from the beginning
+            root.after(1000, start_hiding)
+    
+    def start_hiding():
+        """Start hiding images from the beginning after all are shown"""
+        for i in range(50):
+            root.after(i * 50, lambda idx=i: labels[idx].lower())
     
     # Start showing images after 1 second
     root.after(1000, show_next_image)
@@ -106,154 +117,18 @@ def create_troll_window():
     # Start main loop
     root.mainloop()
 
-# Even simpler working version
-def simple_working_troll():
-    """Minimal working version that definitely works"""
-    
-    # Create window
-    window = tk.Tk()
-    window.title("")
-    
-    # Get screen size
-    width = window.winfo_screenwidth()
-    height = window.winfo_screenheight()
-    
-    # Set window to screen size
-    window.geometry(f"{width}x{height}+0+0")
-    window.configure(bg='black')
-    
-    # Try to make fullscreen
-    try:
-        window.attributes('-fullscreen', True)
-    except:
-        pass
-    
-    # Load image (with error handling)
-    image = None
-    try:
-        import urllib.request
-        import io
-        from PIL import Image, ImageTk
-        
-        url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
-        
-        # Download image
-        with urllib.request.urlopen(url) as u:
-            raw_data = u.read()
-        
-        # Convert to PIL Image then to PhotoImage
-        pil_image = Image.open(io.BytesIO(raw_data))
-        image = ImageTk.PhotoImage(pil_image)
-        window.image = image  # Keep reference
-        
-    except Exception as e:
-        print(f"Couldn't load image: {e}")
-        image = None
-    
-    # Create positions for 50 images (10 columns, 5 rows)
-    positions = []
-    for i in range(50):
-        row = i // 10  # Row number (0-4)
-        col = 9 - (i % 10)  # Column (9 to 0, right to left)
-        
-        x = col * (width // 10) + 20
-        y = row * (height // 5) + 20
-        
-        positions.append((x, y))
-    
-    # Function to show images one by one
-    def place_images(idx=0):
-        if idx >= 50:
-            # All images placed
-            return
-        
-        x, y = positions[idx]
-        
-        if image:
-            label = tk.Label(window, image=image, bg='black')
-        else:
-            label = tk.Label(window, text="O", font=("Arial", 40), 
-                           fg='white', bg='black')
-        
-        label.place(x=x, y=y)
-        
-        # Schedule next image
-        if idx < 49:
-            window.after(50, lambda: place_images(idx + 1))
-    
-    # Start placing images
-    window.after(500, lambda: place_images(0))
-    
-    # Exit on ESC
-    window.bind('<Escape>', lambda e: window.destroy())
-    
-    # Start
-    window.mainloop()
-
-# ULTRA SIMPLE - GUARANTEED TO WORK
-def troll_images():
-    """Simplest possible version that will work"""
-    
-    # Create window
-    win = tk.Tk()
-    win.title("")
-    
-    # Set window size to screen size
-    w = win.winfo_screenwidth()
-    h = win.winfo_screenheight()
-    win.geometry(f"{w}x{h}+0+0")
-    win.configure(bg='black')
-    
-    # Don't use overrideredirect, just maximize
-    win.state('zoomed')
-    
-    # List to store labels
-    labels = []
-    
-    # Create 50 images
-    for i in range(50):
-        # Calculate position: start from top-right
-        row = i // 10  # 0-4
-        col = 9 - (i % 10)  # 9-0
-        
-        x = col * (w // 10)
-        y = row * (h // 5)
-        
-        # Create label (initially hidden)
-        label = tk.Label(win, bg='black')
-        label.place(x=x, y=y)
-        label.lower()  # Hide initially
-        labels.append(label)
-    
-    # Counter for revealed images
-    revealed = 0
-    
-    def reveal():
-        nonlocal revealed
-        
-        if revealed >= 50:
-            return
-        
-        # Show this image
-        labels[revealed].lift()
-        revealed += 1
-        
-        # Schedule next reveal
-        if revealed < 50:
-            win.after(50, reveal)
-    
-    # Start revealing after 1 second
-    win.after(1000, reveal)
-    
-    # Exit
-    win.bind('<Escape>', lambda e: win.destroy())
-    
-    win.mainloop()
-
-# RUN IT
+# Run it
 if __name__ == "__main__":
-    # Try simple_working_troll first
-    simple_working_troll()
+    # Check for required packages
+    try:
+        import requests
+        from PIL import Image, ImageTk
+    except ImportError:
+        print("Installing required packages...")
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "pillow"])
+        import requests
+        from PIL import Image, ImageTk
     
-    # If that doesn't work, uncomment the ultra simple version:
-    # troll_images()
+    create_troll_window()
