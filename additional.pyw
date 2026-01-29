@@ -25,7 +25,7 @@ CONFIG = {
     # Breathing animation settings
     "breathing_enabled": True,           # Enable/disable window breathing
     "breath_amplitude": 0.15,            # Size variation (0.03 = 3% expansion/contraction)
-    "breath_speed": 0,3,                 # Speed of breathing animation (higher = faster)
+    "breath_speed": 0.3,                 # Speed of breathing animation (higher = faster)
     
     # Text movement settings
     "text_movement_enabled": True,       # Enable/disable text up-down movement
