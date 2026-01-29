@@ -52,7 +52,7 @@ CONFIG = {
     "close_image_duration": 2000,        # Duration to show image in milliseconds
     "preload_image": True,               # Preload image on startup to avoid delay
     "show_close_animation": True,        # Show animation before image (implode/explode/fade)
-    "close_animation_type": "implode",   # Animation before image: "implode", "explode", "fade", "none"
+    "close_animation_type": "explode",   # Animation before image: "implode", "explode", "fade", "none"
 }
 
 # ============================================================================
