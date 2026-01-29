@@ -84,7 +84,7 @@ class BreathingWindow:
         self.text_items = []
         
         # Text to display
-        text = "BREATHING\nWINDOW"
+        text = "Salut Adrian"
         font_size = 60
         font_family = "Arial"
         
