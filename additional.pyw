@@ -19,7 +19,7 @@ CONFIG = {
     "background_color": "black",          # Window background color
     
     # Text settings
-    "text": "Je te vois",                 # Text to display (use \n for line breaks)
+    "text": "Tu peux pas m'échapper",                 # Text to display (use \n for line breaks)
     "text_color": "white",               # Main text color
     "outline_color": "red",              # Outline/stroke color
     "outline_width": 4,                  # Thickness of outline (in pixels)
