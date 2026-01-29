@@ -1,4 +1,3 @@
-
 import tkinter as tk
 import urllib.request
 from datetime import datetime
@@ -74,7 +73,7 @@ def main():
     # Try to load and display the image
     try:
         # Use a much scarier image
-        image_url = "https://imageio.forbes.com/specials-images/imageserve/504446482/A-faceless-hooded-figure--with-finger-to--mouth--in-a-shh-gesture-/0x0.jpg?width=960&dpr=1"
+        image_url = "https://t4.ftcdn.net/jpg/18/81/70/85/360_F_1881708523_PzWPMe1RMc4m8gpUF0KG2Sh4OdaZmaWc.jpg"
         
         if image_url and image_url.strip():
             # Download image
