@@ -1,218 +1,190 @@
 import tkinter as tk
-from tkinter import PhotoImage
 import requests
-from io import BytesIO
-import random
 import time
+import random
 
-def create_creepy_fullscreen_troll():
-    """Create a scary fullscreen troll with images appearing one by one"""
+# NO UNICODE CHARACTERS - ASCII ONLY
+def scary_image_invasion():
+    """Fullscreen borderless window with images appearing one by one"""
     
-    # Create main window (NO TITLE BAR, NO BORDERS)
+    # Create window with NO BORDERS, NO TITLE BAR
     root = tk.Tk()
     root.title("")  # Empty title
-    root.overrideredirect(True)  # Remove window decorations completely
+    root.overrideredirect(True)  # Remove all window decorations
     root.attributes('-fullscreen', True)  # Fullscreen
-    root.configure(bg='black')  # Start with black background
+    root.configure(bg='black')  # Black background
+    root.attributes('-topmost', True)  # Always on top
     
-    # Force window to stay on top of everything
-    root.attributes('-topmost', True)
-    
-    # Get screen dimensions
+    # Get screen size
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     
-    print("=" * 60)
-    print("CREEPY IMAGE INVASION ACTIVATED")
-    print(f"Screen: {screen_width}x{screen_height}")
-    print("Images will appear suddenly, one by one...")
-    print("=" * 60)
-    
-    # Try to load the creepy image from URL
+    # Try to load image from URL
+    photo = None
     try:
         url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
         response = requests.get(url, timeout=5)
         
         # Convert to tkinter PhotoImage
-        img_data = BytesIO(response.content)
-        photo = PhotoImage(data=img_data.read())
+        from io import BytesIO
+        import base64
+        
+        # Create PhotoImage from bytes
+        img_data = response.content
+        photo = tk.PhotoImage(data=base64.b64encode(img_data))
         root.tk_image = photo  # Keep reference
         
-        img_width = photo.width()
-        img_height = photo.height()
-        print(f"Image loaded: {img_width}x{img_height}")
-        
-    except Exception as e:
-        print(f"Error loading image: {e}")
-        # Fallback to creepy emoji
-        photo = None
-        img_width = 150
-        img_height = 150
+    except:
+        # If image fails, we'll use text
+        pass
     
-    # Grid layout: 10 columns x 5 rows = 50 images
+    # Grid positions (10x5 = 50 images)
     cols = 10
     rows = 5
     
-    # Calculate exact positions for each image
+    # Calculate positions starting from TOP-RIGHT
     positions = []
     for i in range(50):
-        # Start from top-right (position 0 = top-right corner)
-        row = i // cols  # Row index 0-4
-        col_in_row = i % cols  # Column index in current row 0-9
-        col = cols - 1 - col_in_row  # Reverse: start from rightmost column
+        row = i // cols  # 0 to 4
+        col_in_row = i % cols  # 0 to 9
+        col = cols - 1 - col_in_row  # Start from rightmost (9 to 0)
         
-        # Calculate exact pixel positions
+        # Calculate pixel position
         x = col * (screen_width // cols)
         y = row * (screen_height // rows)
         
-        # Add some random offset for creepier effect
-        x_offset = random.randint(-20, 20)
-        y_offset = random.randint(-20, 20)
+        # Add random offset for creepiness
+        x_offset = random.randint(-30, 30)
+        y_offset = random.randint(-30, 30)
         
         positions.append((x + x_offset, y + y_offset))
     
-    # List to hold all image labels
+    # Store all image labels
     image_labels = []
+    current_image = 0
     
-    # Counter for displayed images
-    images_displayed = 0
-    
-    def flash_screen():
-        """Quick flash effect before showing images"""
+    def flash_white():
+        """Quick white flash effect"""
         root.configure(bg='white')
         root.update()
-        time.sleep(0.05)
+        time.sleep(0.03)
         root.configure(bg='black')
         root.update()
-        time.sleep(0.1)
     
-    def show_next_image():
-        """Display next image with creepy effect"""
-        nonlocal images_displayed
+    def show_next():
+        """Display next image"""
+        nonlocal current_image
         
-        if images_displayed >= 50:
+        if current_image >= 50:
+            # All images shown - add scary text
+            scary_text = tk.Label(root, 
+                                 text="LOOK BEHIND YOU", 
+                                 font=("Arial", 48, "bold"),
+                                 fg='red', 
+                                 bg='black')
+            scary_text.place(relx=0.5, rely=0.5, anchor='center')
             return
         
         # Occasionally flash the screen
-        if random.random() < 0.1:  # 10% chance
-            flash_screen()
+        if random.random() < 0.15:
+            flash_white()
         
-        # Get position for this image
-        x, y = positions[images_displayed]
+        # Get position
+        x, y = positions[current_image]
         
-        # Create the image label but DON'T show it yet
+        # Create and show image
         if photo:
-            label = tk.Label(root, image=photo, bg='black', bd=0)
+            label = tk.Label(root, image=photo, bg='black')
         else:
-            # Fallback: creepy emoji
-            emojis = ["💀", "👻", "🎭", "🤡", "👁️", "🕷️", "🕸️"]
-            emoji = random.choice(emojis)
-            label = tk.Label(root, text=emoji, font=("Arial", 80), 
-                           bg='black', fg='white')
+            # Fallback to text (no emoji - ASCII only)
+            text_options = ["X", "O", "+", "*", "#", "@", "&", "%"]
+            label = tk.Label(root, 
+                           text=random.choice(text_options), 
+                           font=("Arial", 60),
+                           fg='white', 
+                           bg='black')
         
-        # Store reference
+        label.place(x=x, y=y)
         image_labels.append(label)
         
-        # SUDDEN APPEARANCE: Place it without animation
-        label.place(x=x, y=y)
+        current_image += 1
         
-        # Occasionally make it blink
-        if random.random() < 0.2:  # 20% chance
-            def blink():
-                label.config(bg='red')
-                root.after(100, lambda: label.config(bg='black'))
-            
-            root.after(50, blink)
-        
-        images_displayed += 1
-        print(f"Image {images_displayed}/50 appeared at ({x},{y})")
-        
-        # Random delay between 0.03 and 0.07 seconds for unpredictability
+        # Random delay between 0.03 and 0.07 seconds
         delay = random.randint(30, 70)
         
-        # Show next image
-        if images_displayed < 50:
-            root.after(delay, show_next_image)
+        # Schedule next image
+        if current_image < 50:
+            root.after(delay, show_next)
         else:
-            # All images displayed - add creepy text
-            show_creepy_message()
+            # All done - wait then show message
+            root.after(1000, lambda: show_scary_message())
     
-    def show_creepy_message():
-        """Display a creepy message when all images are shown"""
-        time.sleep(0.5)
+    def show_scary_message():
+        """Show final scary message"""
+        msg1 = tk.Label(root, 
+                       text="YOU ARE NOT ALONE", 
+                       font=("Courier", 36, "bold"),
+                       fg='red', 
+                       bg='black')
+        msg1.place(relx=0.5, rely=0.4, anchor='center')
         
-        # Create creepy text that fades in
-        creepy_text = tk.Label(root, 
-                              text="YOU CAN'T ESCAPE", 
-                              font=("Courier", 48, "bold"),
-                              fg='red', 
-                              bg='black')
-        creepy_text.place(relx=0.5, rely=0.4, anchor='center')
+        msg2 = tk.Label(root,
+                       text="PRESS ANY KEY TO ESCAPE", 
+                       font=("Arial", 20),
+                       fg='gray', 
+                       bg='black')
+        msg2.place(relx=0.5, rely=0.9, anchor='center')
         
-        # Second line
-        creepy_text2 = tk.Label(root,
-                               text="LOOK BEHIND YOU", 
-                               font=("Courier", 36, "bold"),
-                               fg='white', 
-                               bg='black')
-        creepy_text2.place(relx=0.5, rely=0.5, anchor='center')
+        # Make message 2 blink
+        def blink_msg():
+            current_color = msg2.cget("fg")
+            new_color = 'dark gray' if current_color == 'gray' else 'gray'
+            msg2.config(fg=new_color)
+            root.after(800, blink_msg)
         
-        # Blinking exit hint (small and hard to see)
-        exit_hint = tk.Label(root,
-                            text="Press ANY KEY to exit", 
-                            font=("Arial", 12),
-                            fg='#222222',  # Very dark gray
-                            bg='black')
-        exit_hint.place(relx=0.5, rely=0.95, anchor='center')
-        
-        # Make hint blink subtly
-        def blink_hint():
-            current_color = exit_hint.cget("fg")
-            new_color = '#555555' if current_color == '#222222' else '#222222'
-            exit_hint.config(fg=new_color)
-            root.after(1000, blink_hint)
-        
-        blink_hint()
+        blink_msg()
     
-    # Bind ALL keys to exit (makes it harder to find the right one)
-    def try_to_exit(event=None):
-        # Only ESC actually exits
-        if event and hasattr(event, 'keysym') and event.keysym == 'Escape':
-            print("Exiting...")
+    # Key bindings - only ESC actually exits
+    def check_key(event):
+        if event.keysym == 'Escape':
             root.destroy()
         else:
             # Wrong key - show error
-            error_label = tk.Label(root, 
-                                  text="WRONG KEY!", 
-                                  font=("Arial", 24),
-                                  fg='red', 
-                                  bg='black')
-            error_label.place(relx=0.5, rely=0.8, anchor='center')
-            root.after(1000, error_label.destroy)
+            error = tk.Label(root, 
+                            text="WRONG KEY!", 
+                            font=("Arial", 20),
+                            fg='red', 
+                            bg='black')
+            error.place(relx=0.5, rely=0.7, anchor='center')
+            root.after(500, error.destroy)
     
-    root.bind('<Key>', try_to_exit)
+    root.bind('<Key>', check_key)
     
-    # Also bind mouse click (but make it not work immediately)
+    # Mouse click doesn't work immediately
+    clicks_needed = 3
     click_count = 0
-    def fake_exit(event=None):
+    
+    def handle_click(event):
         nonlocal click_count
         click_count += 1
-        if click_count >= 5:  # Only exit after 5 clicks
+        
+        if click_count >= clicks_needed:
             root.destroy()
         else:
-            # Show fake closing message
-            fake_msg = tk.Label(root, 
-                               text=f"Closing... {5-click_count} clicks remaining", 
-                               font=("Arial", 18),
-                               fg='white', 
-                               bg='black')
-            fake_msg.place(relx=0.5, rely=0.9, anchor='center')
-            root.after(1500, fake_msg.destroy)
+            # Show how many clicks left
+            hint = tk.Label(root,
+                          text=f"{clicks_needed - click_count} MORE CLICKS", 
+                          font=("Arial", 16),
+                          fg='white', 
+                          bg='black')
+            hint.place(relx=0.5, rely=0.8, anchor='center')
+            root.after(1000, hint.destroy)
     
-    root.bind('<Button-1>', fake_exit)
+    root.bind('<Button-1>', handle_click)
     
-    # Start the image invasion after 1 second
-    def start_invasion():
+    # Start the invasion after 2 seconds
+    def start():
+        # Countdown in console (ASCII only)
         print("Starting in 3...")
         time.sleep(1)
         print("2...")
@@ -220,129 +192,129 @@ def create_creepy_fullscreen_troll():
         print("1...")
         time.sleep(1)
         print("BEGIN!")
-        flash_screen()
-        show_next_image()
+        
+        # Initial flash
+        flash_white()
+        time.sleep(0.5)
+        
+        # Start showing images
+        show_next()
     
-    # Run in separate thread to avoid blocking
+    # Run start in thread
     import threading
-    invasion_thread = threading.Thread(target=start_invasion)
-    invasion_thread.daemon = True
-    invasion_thread.start()
+    start_thread = threading.Thread(target=start)
+    start_thread.daemon = True
+    start_thread.start()
     
-    # Start the main loop
+    # Start main loop
     root.mainloop()
 
-# Ultra-simple version that just works
-def simple_scary_troll():
-    """Simpler version - less effects, just creepy appearance"""
+# SIMPLEST VERSION - NO ERRORS
+def simple_troll():
+    """Even simpler - just works"""
     import tkinter as tk
     import requests
     
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.attributes('-fullscreen', True)
-    root.configure(bg='black')
-    root.attributes('-topmost', True)
+    # Create window
+    window = tk.Tk()
+    window.overrideredirect(True)
+    window.attributes('-fullscreen', True)
+    window.configure(bg='black')
     
-    # Load image
+    # Screen size
+    w = window.winfo_screenwidth()
+    h = window.winfo_screenheight()
+    
+    # Try to load image (but don't fail if it doesn't work)
+    img = None
     try:
         url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
         response = requests.get(url, timeout=3)
-        from io import BytesIO
-        from PIL import Image, ImageTk
-        import io
         
-        img = Image.open(io.BytesIO(response.content))
-        photo = ImageTk.PhotoImage(img)
-        root.tk_image = photo
+        # Convert to PhotoImage
+        from io import BytesIO
+        import base64
+        
+        # Simple base64 encoding
+        import base64
+        img_data = response.content
+        b64_data = base64.b64encode(img_data)
+        img = tk.PhotoImage(data=b64_data)
+        window.tk_image = img  # Keep reference
     except:
-        photo = None
+        pass
     
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-    
-    # Create all positions
+    # Create 50 positions
     positions = []
     for i in range(50):
-        row = i // 10
-        col = 9 - (i % 10)  # Start from right
-        x = col * (screen_w // 10)
-        y = row * (screen_h // 5)
+        row = i // 10  # 0-4
+        col = 9 - (i % 10)  # 9 to 0 (right to left)
+        x = col * (w // 10)
+        y = row * (h // 5)
         positions.append((x, y))
     
-    images_shown = 0
+    # Counter
+    count = 0
     labels = []
     
-    def appear():
-        nonlocal images_shown
-        if images_shown >= 50:
-            # Show creepy message
-            msg = tk.Label(root, text="BOO!", font=("Arial", 72, "bold"),
-                          fg='red', bg='black')
-            msg.place(relx=0.5, rely=0.5, anchor='center')
+    def add_image():
+        nonlocal count
+        if count >= 50:
             return
         
-        x, y = positions[images_shown]
+        x, y = positions[count]
         
-        if photo:
-            label = tk.Label(root, image=photo, bg='black')
+        if img:
+            label = tk.Label(window, image=img, bg='black')
         else:
-            label = tk.Label(root, text="👁️", font=("Arial", 60),
+            # ASCII art if image fails
+            label = tk.Label(window, text="[X]", font=("Arial", 40),
                            fg='white', bg='black')
         
         label.place(x=x, y=y)
         labels.append(label)
-        images_shown += 1
+        count += 1
         
-        # Next image in 0.05 seconds
-        if images_shown < 50:
-            root.after(50, appear)
+        # Next image in 50ms
+        if count < 50:
+            window.after(50, add_image)
+        else:
+            # Show exit hint
+            hint = tk.Label(window, text="Press ESC", font=("Arial", 20),
+                          fg='gray', bg='black')
+            hint.place(relx=0.5, rely=0.95, anchor='center')
     
-    # Start appearing after 1 second
-    root.after(1000, appear)
+    # Start after 1 second
+    window.after(1000, add_image)
     
-    # Only ESC exits (hard to find)
-    root.bind('<Escape>', lambda e: root.destroy())
+    # Exit on ESC
+    window.bind('<Escape>', lambda e: window.destroy())
     
-    # Fake close on other keys
-    def fake_close(event):
-        if event.keysym != 'Escape':
-            lbl = tk.Label(root, text="NOPE", font=("Arial", 30),
-                          fg='white', bg='black')
-            lbl.place(relx=0.5, rely=0.8, anchor='center')
-            root.after(1000, lbl.destroy)
-    
-    root.bind('<Key>', fake_close)
-    
-    root.mainloop()
+    # Start
+    window.mainloop()
 
-# Run it
+# RUN IT
 if __name__ == "__main__":
-    # Try to install required packages
+    # Try to install requests if needed
     try:
         import requests
-    except ImportError:
-        import os
-        os.system("pip install requests")
-        import requests
+    except:
+        # Silent install attempt
+        try:
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import requests
+        except:
+            pass
     
-    # Try PIL for better image handling
-    try:
-        from PIL import Image, ImageTk
-    except ImportError:
-        print("Installing PIL...")
-        import os
-        os.system("pip install pillow")
+    # ASCII ONLY PRINT STATEMENTS
+    print("=" * 60)
+    print("IMAGE INVASION STARTING")
+    print("Fullscreen window will appear")
+    print("Images will cover your screen")
+    print("=" * 60)
     
-    print("\n" + "⚠" * 60)
-    print("WARNING: Creepy fullscreen troll will activate!")
-    print("This will cover your entire screen with images.")
-    print("Press ESC to exit (but it's hard to find!)")
-    print("⚠" * 60 + "\n")
-    
-    import time
-    time.sleep(3)  # Build suspense
-    
-    # Choose which version to run
-    # simple_scary_troll()  # Simpler version
-    create_creepy_fullscreen_troll()  # More creepy effects
+    # Run simple version (most reliable)
+    simple_troll()
