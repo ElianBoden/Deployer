@@ -9,12 +9,9 @@ def download_image_from_url(image_url):
     try:
         print(f"Downloading image from: {image_url}")
         response = requests.get(image_url, timeout=10)
-        response.raise_for_status()  # Check for HTTP errors
+        response.raise_for_status()
         
-        # Create a file-like object from the response content
         image_data = BytesIO(response.content)
-        
-        # Load the image in PyGame
         image = pygame.image.load(image_data)
         print(f"Image downloaded successfully. Size: {image.get_width()}x{image.get_height()}")
         return image
@@ -26,14 +23,14 @@ def download_image_from_url(image_url):
         print(f"Error loading image data: {e}")
         return None
 
-def display_web_image_repeatedly(image_url, num_displays=50, delay_seconds=0.05):
+def display_images_top_right_to_bottom_left(image_url, num_displays=50, delay_seconds=0.05):
     """
-    Display an image from a URL multiple times in a grid pattern.
+    Display images starting from TOP-RIGHT corner, moving left across row, then down.
     
     Args:
-        image_url: URL of the image to download and display
-        num_displays: Total number of times to display the image (default: 50)
-        delay_seconds: Delay between displays in seconds (default: 0.05)
+        image_url: URL of the image
+        num_displays: Total number of images to display (default: 50)
+        delay_seconds: Delay between displays (default: 0.05)
     """
     
     # Initialize PyGame
@@ -49,27 +46,27 @@ def display_web_image_repeatedly(image_url, num_displays=50, delay_seconds=0.05)
     image_width, image_height = image.get_size()
     print(f"Displaying {num_displays} copies of the image...")
     
-    # Calculate grid dimensions (aim for a roughly square arrangement)
-    grid_cols = int(num_displays ** 0.5) + 1
-    grid_rows = (num_displays + grid_cols - 1) // grid_cols
+    # Calculate grid dimensions (10 columns x 5 rows for 50 images)
+    grid_cols = 10
+    grid_rows = 5
     
-    # Create a window that can fit all images
+    # Create window
     screen_width = image_width * grid_cols
     screen_height = image_height * grid_rows
     screen = pygame.display.set_mode((screen_width, screen_height))
-    pygame.display.set_caption(f"Image Display - {num_displays} copies")
+    pygame.display.set_caption(f"Image Display - Starting from Top-Right")
     
-    # Fill background with white
-    screen.fill((255, 255, 255))
-    pygame.display.flip()  # Initial display
+    # Fill background
+    screen.fill((240, 240, 240))
+    pygame.display.flip()
     
-    # Display images one by one with delay
+    # Display images one by one starting from TOP-RIGHT
     images_displayed = 0
+    clock = pygame.time.Clock()
     
-    # Main display loop
     running = True
     while running and images_displayed < num_displays:
-        # Handle events (allow quitting during display)
+        # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -77,7 +74,7 @@ def display_web_image_repeatedly(image_url, num_displays=50, delay_seconds=0.05)
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_SPACE:
-                    # Space key to pause/resume
+                    # Pause on space bar
                     paused = True
                     while paused:
                         for e in pygame.event.get():
@@ -86,37 +83,47 @@ def display_web_image_repeatedly(image_url, num_displays=50, delay_seconds=0.05)
                             elif e.type == pygame.QUIT:
                                 paused = False
                                 running = False
+                        clock.tick(10)
         
-        # Calculate position for current image
-        row = images_displayed // grid_cols
-        col = images_displayed % grid_cols
+        # Calculate position STARTING FROM TOP-RIGHT
+        row = images_displayed // grid_cols  # Which row (0 = top row)
+        col_in_row = images_displayed % grid_cols  # Which column in the current row
+        
+        # Start from rightmost column and move left
+        # For row 0: columns 9, 8, 7, ..., 0
+        # For row 1: columns 9, 8, 7, ..., 0
+        # etc.
+        col = grid_cols - 1 - col_in_row  # This gives us: 9, 8, 7, ..., 0 for each row
+        
         x_pos = col * image_width
         y_pos = row * image_height
         
-        # Display the image at calculated position
+        # Display the image
         screen.blit(image, (x_pos, y_pos))
+        
+        # Update only the portion where we drew
         pygame.display.update(pygame.Rect(x_pos, y_pos, image_width, image_height))
         
         # Increment counter
         images_displayed += 1
         
-        # Display progress in console
-        if images_displayed % 10 == 0:
-            print(f"Progress: {images_displayed}/{num_displays}")
+        # Show progress
+        if images_displayed % 5 == 0:
+            print(f"Progress: {images_displayed}/{num_displays} - Position: Row {row+1}, Col {col+1}")
         
-        # Delay before next image (if not the last one)
+        # Delay before next image
         if images_displayed < num_displays:
             time.sleep(delay_seconds)
     
-    # Final update to ensure all images are visible
+    # Final update
     pygame.display.flip()
     
-    # Keep window open after all images are displayed
+    # Keep window open
     if running:
-        print(f"\nDisplay complete! {images_displayed} images shown.")
-        print("Press ESC or close window to exit.")
+        print(f"\n✓ Display complete! {images_displayed} images shown.")
+        print("   Starting from TOP-RIGHT, moving left across each row")
+        print("   Press ESC or close window to exit")
         
-        clock = pygame.time.Clock()
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -124,84 +131,105 @@ def display_web_image_repeatedly(image_url, num_displays=50, delay_seconds=0.05)
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
-            
-            # Limit frame rate to reduce CPU usage
             clock.tick(30)
     
     pygame.quit()
     sys.exit()
 
-# Simplified version without keeping window open
-def quick_display_from_url():
-    """Simpler version that closes after displaying all images."""
+# Alternative simpler version with clear visualization
+def display_images_corner_to_corner():
+    """Display images starting from top-right corner to bottom-left corner."""
     
-    # Image URL (using the eBay image from your example)
+    # Image URL (using your eBay example)
     IMAGE_URL = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
     
-    print("Starting image display...")
+    print("\n" + "="*60)
+    print("IMAGE DISPLAY: TOP-RIGHT → BOTTOM-LEFT")
+    print("="*60)
     
-    # Initialize PyGame
+    # Initialize
     pygame.init()
     
-    # Download the image
-    response = requests.get(IMAGE_URL)
-    image_data = BytesIO(response.content)
-    image = pygame.image.load(image_data)
+    # Download image
+    try:
+        response = requests.get(IMAGE_URL)
+        image_data = BytesIO(response.content)
+        image = pygame.image.load(image_data)
+    except:
+        print("Error loading image. Make sure you have internet connection.")
+        return
     
-    # Get image size
+    # Image dimensions
     width, height = image.get_size()
     print(f"Image size: {width}x{height}")
     
-    # Set up display window (grid of images)
-    num_displays = 50
-    grid_cols = 10  # 10 columns
-    grid_rows = 5   # 5 rows (10x5=50 images)
+    # Grid setup (10 columns x 5 rows = 50 images)
+    cols, rows = 10, 5
+    screen = pygame.display.set_mode((width * cols, height * rows))
+    pygame.display.set_caption(f"50 Images - Top-Right to Bottom-Left")
     
-    screen = pygame.display.set_mode((width * grid_cols, height * grid_rows))
-    pygame.display.set_caption("50 Image Grid Display")
+    # Background
+    screen.fill((230, 230, 230))
     
-    # Fill background
-    screen.fill((245, 245, 245))
+    # Draw grid lines for visualization
+    for c in range(cols + 1):
+        pygame.draw.line(screen, (200, 200, 200), 
+                        (c * width, 0), (c * width, height * rows), 1)
+    for r in range(rows + 1):
+        pygame.draw.line(screen, (200, 200, 200),
+                        (0, r * height), (width * cols, r * height), 1)
     pygame.display.flip()
     
+    print("\nStarting display sequence...")
+    print("Top-Right → Moving left across row → Next row → Repeat")
+    print("-" * 60)
+    
     # Display images one by one
-    for i in range(num_displays):
+    for i in range(50):
         # Handle quit events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 return
         
-        # Calculate position
-        row = i // grid_cols
-        col = i % grid_cols
+        # Calculate position: Start from top-right (col=9, row=0)
+        row = i // cols  # 0, 0, 0, ... (first 10), then 1, 1, 1, ...
+        col_in_row = i % cols  # 0, 1, 2, ... 9
+        
+        # Start from rightmost column (9) and move left
+        col = cols - 1 - col_in_row  # 9, 8, 7, ... 0
+        
         x = col * width
         y = row * height
         
-        # Display the image
+        # Display image
         screen.blit(image, (x, y))
         
-        # Update only the portion of the screen where the image was placed
-        pygame.display.update(pygame.Rect(x, y, width, height))
+        # Draw a green border around the current image
+        pygame.draw.rect(screen, (0, 200, 0), 
+                        (x, y, width, height), 3)
         
-        # Wait 0.05 seconds (unless it's the last image)
-        if i < num_displays - 1:
+        pygame.display.update(pygame.Rect(x-5, y-5, width+10, height+10))
+        
+        # Print current position
+        print(f"Image {i+1:2d}: Position (Row {row+1}, Col {col+1}) [X:{x}, Y:{y}]")
+        
+        # Delay (except for last image)
+        if i < 49:
             time.sleep(0.05)
-        
-        # Print progress every 10 images
-        if (i + 1) % 10 == 0:
-            print(f"Displayed {i + 1}/50 images")
     
-    # Final full screen update
-    pygame.display.flip()
-    print("Display complete!")
+    print("-" * 60)
+    print("✓ All 50 images displayed!")
+    print(f"  Path: Top-Right (Row 1, Col 10) → Bottom-Left (Row 5, Col 1)")
+    print("  Window will close in 10 seconds...")
     
-    # Keep window open for 5 seconds then close
-    time.sleep(5)
+    # Keep window open
+    time.sleep(10)
     pygame.quit()
 
+# Main execution
 if __name__ == "__main__":
-    # Install required packages if not already installed
+    # Install required packages if needed
     try:
         import requests
     except ImportError:
@@ -211,25 +239,20 @@ if __name__ == "__main__":
         subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "pygame"])
         import requests
     
-    # Configuration
+    # Choose which function to run:
+    
+    # Option 1: Detailed version with controls
     IMAGE_URL = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
+    # You can change the URL to any image:
+    # IMAGE_URL = "https://picsum.photos/200/300"  # Random image
     
-    # You can change the URL to any image you want
-    # IMAGE_URL = "https://example.com/your-image.jpg"
+    print("\nChoose display option:")
+    print("1. Detailed version (with pause/resume controls)")
+    print("2. Simple version (automatic, with visualization)")
     
-    NUM_DISPLAYS = 50
-    DELAY_SECONDS = 0.05
+    choice = input("Enter 1 or 2 (default 2): ").strip()
     
-    print("=" * 60)
-    print("WEB IMAGE DISPLAY PROGRAM")
-    print("=" * 60)
-    print(f"Image URL: {IMAGE_URL}")
-    print(f"Number of displays: {NUM_DISPLAYS}")
-    print(f"Delay between displays: {DELAY_SECONDS} seconds")
-    print("-" * 60)
-    
-    # Run the main display function
-    display_web_image_repeatedly(IMAGE_URL, NUM_DISPLAYS, DELAY_SECONDS)
-    
-    # Alternatively, run the simpler version:
-    # quick_display_from_url()
+    if choice == "1":
+        display_images_top_right_to_bottom_left(IMAGE_URL, 50, 0.05)
+    else:
+        display_images_corner_to_corner()
