@@ -73,7 +73,7 @@ def main():
     # Try to load and display the image
     try:
         # Use a much scarier image
-        image_url = "https://t4.ftcdn.net/jpg/18/81/70/85/360_F_1881708523_PzWPMe1RMc4m8gpUF0KG2Sh4OdaZmaWc.jpg"
+        image_url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
         
         if image_url and image_url.strip():
             # Download image
