@@ -1,192 +1,234 @@
 import tkinter as tk
 import requests
 import time
-import threading
 
-def create_sliding_troll_window():
-    """Create a borderless fullscreen window with sliding image effect"""
+def create_sliding_transparent_troll():
+    """Borderless window with transparent images, sliding window effect"""
     
-    # Create window with NO TITLE BAR
+    # Create window
     root = tk.Tk()
-    root.title("")  # Empty title
+    root.title("")
     
-    # Get screen dimensions
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    
-    # Remove window decorations for NO TAB
+    # Remove ALL window decorations - NO TAB, NO BORDER
     root.overrideredirect(True)
     
-    # Set window to cover entire screen
+    # Get screen size and make fullscreen
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
     root.geometry(f"{screen_width}x{screen_height}+0+0")
-    root.configure(bg='white')
     
-    # Make window stay on top
+    # Use black background instead of white for creepy effect
+    root.configure(bg='black')
+    
+    # Keep window on top
     root.attributes('-topmost', True)
     
-    print(f"Screen: {screen_width}x{screen_height}")
-    print("Starting sliding image display...")
-    print("Window has NO tabs/borders - fullscreen")
-    print("-" * 50)
+    print("=" * 60)
+    print("TRANSPARENT IMAGE SLIDING WINDOW - NO BACKGROUND")
+    print("=" * 60)
     
-    # Calculate cell size (10 columns x 5 rows = 50 positions)
+    # Calculate cell size for 10x5 grid
     cell_width = screen_width // 10
     cell_height = screen_height // 5
     
-    # Try to load and resize image
+    # Try to load image with transparency support
     img = None
     try:
-        url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
-        response = requests.get(url, timeout=5)
-        
-        # Use PIL to resize image
         from io import BytesIO
         from PIL import Image, ImageTk
         
-        # Open and resize image to fit cell
+        url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
+        response = requests.get(url, timeout=5)
+        
+        # Open image and resize
         pil_image = Image.open(BytesIO(response.content))
-        pil_image = pil_image.resize((cell_width - 4, cell_height - 4), Image.Resampling.LANCZOS)
+        
+        # Create transparency by making white pixels transparent
+        pil_image = pil_image.convert("RGBA")
+        datas = pil_image.getdata()
+        
+        new_data = []
+        for item in datas:
+            # Make white pixels transparent (adjust threshold as needed)
+            if item[0] > 200 and item[1] > 200 and item[2] > 200:
+                new_data.append((255, 255, 255, 0))  # Fully transparent
+            else:
+                new_data.append(item)
+        
+        pil_image.putdata(new_data)
+        
+        # Resize to fit cell
+        pil_image = pil_image.resize((cell_width - 10, cell_height - 10), Image.Resampling.LANCZOS)
         
         # Convert to PhotoImage
         img = ImageTk.PhotoImage(pil_image)
-        root.tk_image = img  # Keep reference
+        root.tk_image = img
         
-        print(f"Image resized to: {cell_width - 4}x{cell_height - 4}")
+        print(f"Image loaded with transparency")
         
     except Exception as e:
-        print(f"Image load failed: {e}")
+        print(f"Could not load image: {e}")
         img = None
     
-    # Queue to track the last 10 images
-    image_queue = []
+    # Store positions for all 50 images (top-right to bottom-left)
+    positions = []
+    for i in range(50):
+        row = i // 10
+        col = 9 - (i % 10)  # Start from rightmost column
+        x = col * cell_width + 5
+        y = row * cell_height + 5
+        positions.append((x, y))
     
-    # Counter for total images created
-    total_images_created = 0
+    # Sliding window variables
+    image_queue = []  # Stores current visible images (max 10)
+    total_created = 0  # How many images created so far (0-50)
+    is_destroying = False  # Flag for destruction phase
+    destruction_index = 0  # Index for destruction phase
     
-    # Current position index (0-49)
-    current_position = 0
-    
-    def calculate_position(index):
-        """Calculate screen position for image at given index (0-49)"""
-        # Start from top-right (index 0 = top-right corner)
-        row = index // 10  # 0 to 4
-        col = 9 - (index % 10)  # 9 to 0 (right to left)
+    def create_next_image():
+        """Create and show next image in sequence"""
+        nonlocal total_created
         
-        # Calculate pixel position (centered in cell)
-        x = col * cell_width + 2
-        y = row * cell_height + 2
+        if total_created >= 50:
+            # All images created, start destruction phase
+            start_destruction()
+            return
         
-        return (x, y)
-    
-    def create_and_show_image():
-        """Create a new image, show it, and manage the queue"""
-        nonlocal total_images_created, current_position
-        
-        if total_images_created >= 50:
-            return  # Done showing all images
-        
-        # Calculate position for this image
-        x, y = calculate_position(current_position)
-        
-        # Create the image label
+        # Create image label
         if img:
-            label = tk.Label(root, image=img, bg='white')
+            label = tk.Label(root, image=img, bg='black')
         else:
-            # Fallback: number label
-            label = tk.Label(root, text=str(total_images_created + 1), 
-                           font=("Arial", 20), fg='black', bg='white',
-                           bd=1, relief='solid')
+            # Fallback if image loading failed
+            label = tk.Label(root, text=str(total_created + 1), 
+                           font=("Arial", 20), fg='red', bg='black')
         
-        # Place the image
+        # Place at calculated position
+        x, y = positions[total_created]
         label.place(x=x, y=y)
         
         # Add to queue
         image_queue.append(label)
         
-        # Print progress
-        print(f"Image {total_images_created + 1}/50 created at position {current_position + 1}")
+        print(f"Image {total_created + 1} created")
+        total_created += 1
         
-        # Update counters
-        total_images_created += 1
-        current_position += 1
-        
-        # If queue has more than 10, remove the oldest
+        # If we have more than 10 images, destroy oldest
         if len(image_queue) > 10:
-            # Remove the oldest image
-            oldest_label = image_queue.pop(0)
-            oldest_label.destroy()
-            print(f"  Removed oldest image (queue size: {len(image_queue)})")
+            oldest = image_queue.pop(0)
+            oldest.destroy()
+            print(f"  Destroyed oldest (visible: {len(image_queue)})")
         
-        # Schedule next image if not done
-        if total_images_created < 50:
-            root.after(50, create_and_show_image)
+        # Schedule next creation if not done
+        if total_created < 50:
+            root.after(50, create_next_image)
         else:
-            print("\nAll 50 images have been created!")
-            print(f"Final queue size: {len(image_queue)} images visible")
+            # All created, wait a moment then start destruction
+            root.after(500, start_destruction)
     
-    # Start showing images after 1 second
-    root.after(1000, create_and_show_image)
+    def start_destruction():
+        """Start destroying the last 10 images one by one"""
+        nonlocal is_destroying
+        
+        if not image_queue:
+            print("No images to destroy")
+            return
+        
+        is_destroying = True
+        print("\n" + "-" * 40)
+        print("DESTRUCTION PHASE: Destroying last 10 images...")
+        print("-" * 40)
+        
+        # Start destroying images one by one
+        destroy_next_image()
     
-    # Exit on ESC (but window has no title bar, so need alternative)
-    root.bind('<Escape>', lambda e: root.destroy())
+    def destroy_next_image():
+        """Destroy next image in the queue"""
+        nonlocal destruction_index
+        
+        if not image_queue:
+            print("All images destroyed!")
+            # Wait and then close window
+            root.after(1000, root.destroy)
+            return
+        
+        # Destroy the first image in queue
+        label = image_queue.pop(0)
+        label.destroy()
+        
+        destruction_index += 1
+        print(f"Destroyed image {destruction_index}/10")
+        
+        # Continue destroying if queue not empty
+        if image_queue:
+            root.after(50, destroy_next_image)
+        else:
+            print("\n" + "=" * 40)
+            print("ALL IMAGES DESTROYED - WINDOW WILL CLOSE")
+            print("=" * 40)
+            root.after(1000, root.destroy)
     
-    # Also exit on Alt+F4 (Windows) or Ctrl+W (some systems)
-    root.bind('<Alt-F4>', lambda e: root.destroy())
+    # Start creating images after 1 second delay
+    root.after(1000, create_next_image)
     
-    # Add a hidden close button in corner (transparent)
-    close_btn = tk.Label(root, text="X", font=("Arial", 12), 
-                        fg='#CCCCCC', bg='white', cursor='hand2')
-    close_btn.place(x=screen_width-30, y=5)
-    close_btn.bind('<Button-1>', lambda e: root.destroy())
+    # Exit handlers
+    def exit_program(event=None):
+        print("\nProgram terminated by user")
+        root.destroy()
     
-    print("\nInstructions:")
-    print("- Images will appear one by one every 0.05 seconds")
-    print("- After 10 images, oldest will be destroyed as new ones appear")
-    print("- Press ESC or click the faint 'X' in top-right to exit")
-    print("-" * 50)
+    root.bind('<Escape>', exit_program)
+    root.bind('<Control-c>', exit_program)
+    
+    # Add hidden exit hint (barely visible)
+    exit_hint = tk.Label(root, text="ESC", font=("Arial", 8), 
+                        fg='#222222', bg='black')
+    exit_hint.place(x=screen_width - 30, y=5)
+    
+    print("\nPROGRAM STARTED:")
+    print("1. Images will appear one by one (0.05s interval)")
+    print("2. After 10 images, oldest destroyed as new ones appear")
+    print("3. After all 50 created, last 10 destroyed one by one")
+    print("4. Window will close automatically")
+    print("\nPress ESC to exit early")
+    print("=" * 60)
     
     # Start main loop
     root.mainloop()
 
-# Alternative version with visual feedback
-def sliding_troll_visual():
-    """Version with better visual feedback"""
+# Alternative simpler version without PIL
+def simple_troll_no_background():
+    """Version without PIL dependency"""
     
-    # Create window
     root = tk.Tk()
     root.title("")
-    root.overrideredirect(True)  # NO TABS
+    root.overrideredirect(True)
     
-    # Screen size
+    # Fullscreen
     w = root.winfo_screenwidth()
     h = root.winfo_screenheight()
     root.geometry(f"{w}x{h}+0+0")
-    root.configure(bg='white')
+    root.configure(bg='black')
     
-    # Cell size
+    # Calculate positions
     cell_w = w // 10
     cell_h = h // 5
     
-    # Load image
+    # Try to load image
     photo = None
     try:
-        import urllib.request
+        import base64
         import io
-        from PIL import Image, ImageTk
         
         url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
-        with urllib.request.urlopen(url) as response:
-            img_data = response.read()
+        response = requests.get(url, timeout=5)
         
-        pil_img = Image.open(io.BytesIO(img_data))
-        pil_img = pil_img.resize((cell_w - 10, cell_h - 10), Image.Resampling.LANCZOS)
-        photo = ImageTk.PhotoImage(pil_img)
+        # Simple PhotoImage without transparency
+        photo = tk.PhotoImage(data=base64.b64encode(response.content))
         root.photo = photo
         
     except:
         photo = None
     
-    # Create ALL positions in advance
+    # Store positions
     positions = []
     for i in range(50):
         row = i // 10
@@ -195,73 +237,85 @@ def sliding_troll_visual():
         y = row * cell_h + 5
         positions.append((x, y))
     
-    # Queue system
+    # Queue for images
     queue = []
-    current_idx = 0
+    created = 0
     
     def add_image():
-        nonlocal current_idx
+        nonlocal created
         
-        if current_idx >= 50:
+        if created >= 50:
+            # Start destroying
+            destroy_all()
             return
         
-        # Create new image
+        # Create image
         if photo:
-            lbl = tk.Label(root, image=photo, bg='white')
+            label = tk.Label(root, image=photo, bg='black')
         else:
-            lbl = tk.Label(root, text=str(current_idx + 1), 
-                          font=("Arial", 16), fg='black', bg='white')
+            # Create red rectangle instead
+            canvas = tk.Canvas(root, width=cell_w-10, height=cell_h-10, 
+                             bg='black', highlightthickness=0)
+            canvas.create_rectangle(0, 0, cell_w-10, cell_h-10, 
+                                  fill='red', outline='')
+            label = canvas
         
-        x, y = positions[current_idx]
-        lbl.place(x=x, y=y)
+        x, y = positions[created]
+        label.place(x=x, y=y)
         
-        # Add to queue
-        queue.append(lbl)
+        queue.append(label)
+        created += 1
         
-        # Remove oldest if queue > 10
+        # Remove oldest if we have more than 10
         if len(queue) > 10:
             old = queue.pop(0)
             old.destroy()
         
-        current_idx += 1
-        
         # Schedule next
-        if current_idx < 50:
+        if created < 50:
             root.after(50, add_image)
+        else:
+            # Wait then destroy all
+            root.after(500, destroy_all)
+    
+    def destroy_all():
+        """Destroy all remaining images one by one"""
+        if not queue:
+            root.after(1000, root.destroy)
+            return
+        
+        # Destroy one image
+        label = queue.pop(0)
+        label.destroy()
+        
+        # Schedule next destruction
+        if queue:
+            root.after(50, destroy_all)
+        else:
+            # All destroyed, close window
+            root.after(1000, root.destroy)
     
     # Start
-    root.after(500, add_image)
+    root.after(1000, add_image)
     
     # Exit
     root.bind('<Escape>', lambda e: root.destroy())
     
-    # Add status text (fades out)
-    status = tk.Label(root, text="Images: 0/50   Queue: 0", 
-                     font=("Arial", 10), fg='gray', bg='white')
-    status.place(x=10, y=10)
-    
-    def update_status():
-        if current_idx < 50:
-            status.config(text=f"Images: {current_idx}/50   Queue: {len(queue)}")
-            root.after(100, update_status)
-    
-    root.after(600, update_status)
-    
     root.mainloop()
 
-# Run the simplest version
+# Run the program
 if __name__ == "__main__":
-    # Check for required packages
+    # Install required packages if needed
     try:
         import requests
-        from PIL import Image, ImageTk
     except ImportError:
-        print("Installing required packages...")
         import subprocess
         import sys
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "pillow"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
         import requests
-        from PIL import Image, ImageTk
     
-    # Run the main function
-    create_sliding_troll_window()
+    # Try to use first version with transparency
+    create_sliding_transparent_troll()
+    
+    # If that fails, use simple version:
+    # simple_troll_no_background()
