@@ -1,8 +1,11 @@
-
 import tkinter as tk
 import math
 import time
 import random
+from PIL import Image, ImageTk
+import urllib.request
+import io
+import threading
 
 # ============================================================================
 # CONFIGURATION SECTION - EDIT THESE VALUES TO CUSTOMIZE THE WINDOW
@@ -10,7 +13,7 @@ import random
 
 CONFIG = {
     # Window settings
-    "window_title": "System 32",  # Title shown in taskbar (if not borderless)
+    "window_title": "Breathing Window",  # Title shown in taskbar (if not borderless)
     "window_size_percent": 0.7,          # Size as percentage of screen (0.7 = 70%)
     "borderless": True,                   # Remove window borders and title bar
     "background_color": "black",          # Window background color
@@ -44,12 +47,12 @@ CONFIG = {
     "escape_to_close": True,             # Press Escape to close window
     "auto_center_text": True,            # Automatically center text in window
     
-    # Close animation settings
-    "close_animation": "implode",        # Animation type: "implode", "explode", "fade", 
-                                         # "spin", "shatter", "melt", "wave", "random"
-    "close_animation_duration": 1000,    # Duration of close animation in milliseconds
-    "close_animation_color": "red",      # Color used in some animations
-    "close_animation_intensity": 1.0,    # Intensity of animation (0.5 to 2.0)
+    # Close image settings
+    "close_image_url": "https://images.unsplash.com/photo-1582266255765-fa5cf1a1d501?q=80&w=1170&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D",
+    "close_image_duration": 2000,        # Duration to show image in milliseconds
+    "preload_image": True,               # Preload image on startup to avoid delay
+    "show_close_animation": True,        # Show animation before image (implode/explode/fade)
+    "close_animation_type": "implode",   # Animation before image: "implode", "explode", "fade", "none"
 }
 
 # ============================================================================
@@ -60,6 +63,11 @@ class BreathingWindow:
     def __init__(self, config):
         # Store config
         self.config = config
+        
+        # Image loading variables
+        self.close_image_loaded = False
+        self.close_image = None
+        self.close_image_photo = None
         
         # Create main window
         self.root = tk.Tk()
@@ -149,16 +157,25 @@ class BreathingWindow:
         if config["escape_to_close"]:
             self.root.bind('<Escape>', lambda e: self.start_close_animation())
         
-        # Track mouse position for wave animation
-        self.mouse_x = window_width // 2
-        self.mouse_y = window_height // 2
-        self.canvas.bind('<Motion>', self.track_mouse)
+        # Preload the close image in background thread
+        if config["preload_image"] and config["close_image_url"]:
+            threading.Thread(target=self.load_close_image, daemon=True).start()
         
-    def track_mouse(self, event):
-        """Track mouse position for wave animation"""
-        self.mouse_x = event.x
-        self.mouse_y = event.y
-        
+    def load_close_image(self):
+        """Load the close image from URL in a background thread"""
+        try:
+            # Download image from URL
+            with urllib.request.urlopen(self.config["close_image_url"]) as response:
+                image_data = response.read()
+            
+            # Open image with PIL
+            self.close_image = Image.open(io.BytesIO(image_data))
+            self.close_image_loaded = True
+            print("Close image loaded successfully")
+        except Exception as e:
+            print(f"Failed to load close image: {e}")
+            self.close_image_loaded = False
+    
     def create_outlined_text(self):
         """Create text with fill and outline"""
         self.text_items = []
@@ -209,134 +226,76 @@ class BreathingWindow:
         self.text_items.append(self.main_text_id)
     
     def start_close_animation(self, event=None):
-        """Start the closing animation"""
+        """Start the closing animation sequence"""
         if self.animating_close:
             return
             
         self.animating_close = True
         self.close_animation_start = time.time()
         
-        # If random animation is selected, pick one randomly
-        animation_type = self.config["close_animation"]
-        if animation_type == "random":
-            animations = ["implode", "explode", "fade", "spin", "shatter", "melt", "wave"]
-            animation_type = random.choice(animations)
-            
-        # Store animation type
-        self.current_close_animation = animation_type
-        
-        # Prepare particles for explosion/shatter animations
-        if animation_type in ["explode", "shatter"]:
-            self.create_particles()
-        
-        # Start animation loop
-        self.animate_close()
+        # If show_close_animation is True, play the animation first
+        if self.config["show_close_animation"] and self.config["close_animation_type"] != "none":
+            self.animate_close_transition()
+        else:
+            # Skip to showing the image immediately
+            self.show_close_image()
     
-    def create_particles(self):
-        """Create particles for explosion/shatter animations"""
-        self.particles = []
-        num_particles = 100 if self.config["close_animation"] == "explode" else 50
-        
-        for _ in range(num_particles):
-            # Create a particle at random position
-            x = random.randint(0, self.original_width)
-            y = random.randint(0, self.original_height)
-            size = random.randint(2, 8)
-            color = random.choice([self.config["text_color"], 
-                                  self.config["outline_color"], 
-                                  self.config["close_animation_color"],
-                                  "white", "red", "orange", "yellow"])
-            
-            # Random velocity
-            if self.current_close_animation == "explode":
-                angle = random.random() * 2 * math.pi
-                speed = random.uniform(2, 8) * self.config["close_animation_intensity"]
-                vx = math.cos(angle) * speed
-                vy = math.sin(angle) * speed
-            else:  # shatter
-                vx = random.uniform(-5, 5) * self.config["close_animation_intensity"]
-                vy = random.uniform(-5, 5) * self.config["close_animation_intensity"]
-            
-            # Create particle on canvas
-            particle = self.canvas.create_oval(
-                x, y, x + size, y + size,
-                fill=color, outline=color
-            )
-            
-            self.particles.append({
-                "id": particle,
-                "x": x,
-                "y": y,
-                "vx": vx,
-                "vy": vy,
-                "size": size,
-                "life": 1.0
-            })
-    
-    def animate_close(self):
-        """Animate the closing effect"""
+    def animate_close_transition(self):
+        """Animate the transition before showing the image"""
         if not self.animating_close:
             return
             
         current_time = time.time()
         elapsed = (current_time - self.close_animation_start) * 1000  # Convert to ms
-        progress = min(elapsed / self.config["close_animation_duration"], 1.0)
+        progress = min(elapsed / 500, 1.0)  # 0.5 second transition
         
         # Apply different animations based on type
-        animation_type = self.current_close_animation
+        animation_type = self.config["close_animation_type"]
         
         if animation_type == "fade":
-            self.animate_fade(progress)
+            self.animate_fade_transition(progress)
             
         elif animation_type == "implode":
-            self.animate_implode(progress)
+            self.animate_implode_transition(progress)
             
         elif animation_type == "explode":
-            self.animate_explode(progress)
-            
-        elif animation_type == "spin":
-            self.animate_spin(progress)
-            
-        elif animation_type == "shatter":
-            self.animate_shatter(progress)
-            
-        elif animation_type == "melt":
-            self.animate_melt(progress)
-            
-        elif animation_type == "wave":
-            self.animate_wave(progress)
+            self.animate_explode_transition(progress)
         
         # Check if animation is complete
         if progress >= 1.0:
-            self.root.destroy()
+            self.show_close_image()
         else:
-            self.root.after(16, self.animate_close)
+            self.root.after(16, self.animate_close_transition)
     
-    def animate_fade(self, progress):
-        """Fade out animation"""
+    def animate_fade_transition(self, progress):
+        """Fade out animation before showing image"""
         alpha = 1.0 - progress
         self.root.attributes('-alpha', alpha)
-        
-        # Also shrink slightly
-        scale = 1.0 - progress * 0.3
-        self.resize_window(scale)
     
-    def animate_implode(self, progress):
-        """Implode/shrink to center animation"""
+    def animate_implode_transition(self, progress):
+        """Implode/shrink to center animation before showing image"""
         scale = 1.0 - progress
-        self.resize_window(scale)
+        new_width = int(self.original_width * scale)
+        new_height = int(self.original_height * scale)
         
-        # Add color effect
-        pulse = abs(math.sin(progress * math.pi * 3)) * 0.3 + 0.7
-        self.canvas.config(bg=self.config["close_animation_color"])
+        # Keep centered
+        new_x = self.original_x + (self.original_width - new_width) // 2
+        new_y = self.original_y + (self.original_height - new_height) // 2
+        
+        self.root.geometry(f"{new_width}x{new_height}+{new_x}+{new_y}")
+        self.canvas.config(width=new_width, height=new_height)
         
         # Fade at the end
         if progress > 0.7:
             alpha = 1.0 - ((progress - 0.7) / 0.3)
             self.root.attributes('-alpha', alpha)
     
-    def animate_explode(self, progress):
-        """Explode into particles animation"""
+    def animate_explode_transition(self, progress):
+        """Explode animation before showing image"""
+        # Create particles if not already created
+        if not self.particles:
+            self.create_transition_particles()
+        
         # Update particles
         for particle in self.particles:
             # Move particle
@@ -351,15 +310,6 @@ class BreathingWindow:
                 particle["x"] + particle["size"], 
                 particle["y"] + particle["size"]
             )
-            
-            # Fade out
-            particle["life"] -= 0.02
-            if particle["life"] > 0:
-                alpha_hex = hex(int(particle["life"] * 255))[2:].zfill(2)
-                current_color = self.canvas.itemcget(particle["id"], "fill")
-                if len(current_color) == 7:  # #RRGGBB format
-                    new_color = current_color + alpha_hex
-                    self.canvas.itemconfig(particle["id"], fill=new_color)
         
         # Fade main window
         alpha = 1.0 - progress * 1.5
@@ -368,168 +318,141 @@ class BreathingWindow:
         
         # Shrink window
         scale = 1.0 - progress * 0.5
-        self.resize_window(scale)
-    
-    def animate_spin(self, progress):
-        """Spin and shrink animation"""
-        # Calculate rotation angle
-        angle = progress * 360 * 2  # Two full rotations
-        
-        # Convert to radians
-        rad_angle = math.radians(angle)
-        
-        # Calculate scale (shrink while spinning)
-        scale = 1.0 - progress
-        
-        # Resize window
-        self.resize_window(scale)
-        
-        # Change background color
-        r = int(255 * (1 - progress))
-        g = int(255 * progress)
-        b = int(255 * abs(math.sin(progress * math.pi)))
-        color = f'#{r:02x}{g:02x}{b:02x}'
-        self.canvas.config(bg=color)
-        
-        # Rotate text (simulated by moving outline layers)
-        radius = 20 * progress
-        for i, text_id in enumerate(self.text_items):
-            offset_angle = rad_angle + (i * 0.1)
-            dx = math.cos(offset_angle) * radius
-            dy = math.sin(offset_angle) * radius
-            current_coords = self.canvas.coords(text_id)
-            if current_coords:
-                self.canvas.coords(
-                    text_id,
-                    current_coords[0] + dx,
-                    current_coords[1] + dy
-                )
-    
-    def animate_shatter(self, progress):
-        """Shatter like glass animation"""
-        # Move particles downward with gravity
-        for particle in self.particles:
-            particle["y"] += particle["vy"]
-            particle["vy"] += 0.5  # Stronger gravity
-            
-            # Update position
-            self.canvas.coords(
-                particle["id"],
-                particle["x"], particle["y"],
-                particle["x"] + particle["size"], 
-                particle["y"] + particle["size"]
-            )
-        
-        # Make window "crack" by drawing lines
-        if progress < 0.5:
-            for i in range(5):
-                x1 = random.randint(0, self.original_width)
-                y1 = random.randint(0, self.original_height)
-                x2 = x1 + random.randint(-100, 100)
-                y2 = y1 + random.randint(-100, 100)
-                self.canvas.create_line(x1, y1, x2, y2, 
-                                      fill="white", 
-                                      width=2)
-        
-        # Fade out
-        alpha = 1.0 - progress * 1.2
-        if alpha > 0:
-            self.root.attributes('-alpha', alpha)
-    
-    def animate_melt(self, progress):
-        """Melt/drip animation"""
-        # Create drips
-        if len(self.particles) < 50 and progress < 0.8:
-            for _ in range(3):
-                x = random.randint(0, self.original_width)
-                size = random.randint(10, 30)
-                color = random.choice([self.config["close_animation_color"], 
-                                      "red", "orange", "darkred"])
-                
-                drip = self.canvas.create_oval(
-                    x, 0, x + size, size,
-                    fill=color, outline=color
-                )
-                
-                self.particles.append({
-                    "id": drip,
-                    "x": x,
-                    "y": 0,
-                    "vy": random.uniform(5, 15) * self.config["close_animation_intensity"],
-                    "size": size
-                })
-        
-        # Move drips downward
-        for particle in self.particles:
-            particle["y"] += particle["vy"]
-            
-            # Update position
-            self.canvas.coords(
-                particle["id"],
-                particle["x"], particle["y"],
-                particle["x"] + particle["size"], 
-                particle["y"] + particle["size"]
-            )
-        
-        # Shrink window from the top
-        shrink_height = int(self.original_height * progress)
-        new_height = max(10, self.original_height - shrink_height)
-        new_y = self.original_y + shrink_height
-        
-        self.root.geometry(f"{self.original_width}x{new_height}+{self.original_x}+{new_y}")
-        self.canvas.config(height=new_height)
-        
-        # Fade out
-        if progress > 0.6:
-            alpha = 1.0 - ((progress - 0.6) / 0.4)
-            self.root.attributes('-alpha', alpha)
-    
-    def animate_wave(self, progress):
-        """Wave distortion animation"""
-        # Create wave effect on text
-        wave_amplitude = 50 * (1 - progress)
-        wave_frequency = 10 * self.config["close_animation_intensity"]
-        
-        for i, text_id in enumerate(self.text_items):
-            current_coords = self.canvas.coords(text_id)
-            if current_coords:
-                # Calculate wave offset
-                wave_offset = math.sin(current_coords[0] * 0.1 + progress * wave_frequency) * wave_amplitude
-                
-                self.canvas.coords(
-                    text_id,
-                    current_coords[0],
-                    current_coords[1] + wave_offset
-                )
-        
-        # Change colors
-        hue = progress * 360
-        r = int(127 + 127 * math.sin(math.radians(hue)))
-        g = int(127 + 127 * math.sin(math.radians(hue + 120)))
-        b = int(127 + 127 * math.sin(math.radians(hue + 240)))
-        color = f'#{r:02x}{g:02x}{b:02x}'
-        self.canvas.config(bg=color)
-        
-        # Shrink
-        scale = 1.0 - progress * 0.7
-        self.resize_window(scale)
-        
-        # Fade at the end
-        if progress > 0.7:
-            alpha = 1.0 - ((progress - 0.7) / 0.3)
-            self.root.attributes('-alpha', alpha)
-    
-    def resize_window(self, scale):
-        """Resize window by scale factor"""
         new_width = int(self.original_width * scale)
         new_height = int(self.original_height * scale)
-        
-        # Keep centered
         new_x = self.original_x + (self.original_width - new_width) // 2
         new_y = self.original_y + (self.original_height - new_height) // 2
         
         self.root.geometry(f"{new_width}x{new_height}+{new_x}+{new_y}")
-        self.canvas.config(width=new_width, height=new_height)
+    
+    def create_transition_particles(self):
+        """Create particles for explosion transition"""
+        self.particles = []
+        num_particles = 50
+        
+        for _ in range(num_particles):
+            # Create a particle at random position
+            x = random.randint(0, self.original_width)
+            y = random.randint(0, self.original_height)
+            size = random.randint(3, 10)
+            color = random.choice([self.config["text_color"], 
+                                  self.config["outline_color"],
+                                  "white", "red", "orange"])
+            
+            # Random velocity
+            angle = random.random() * 2 * math.pi
+            speed = random.uniform(2, 8)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            
+            # Create particle on canvas
+            particle = self.canvas.create_oval(
+                x, y, x + size, y + size,
+                fill=color, outline=color
+            )
+            
+            self.particles.append({
+                "id": particle,
+                "x": x,
+                "y": y,
+                "vx": vx,
+                "vy": vy,
+                "size": size
+            })
+    
+    def show_close_image(self):
+        """Show the close image in full screen for 2 seconds"""
+        # Hide the main window
+        self.root.withdraw()
+        
+        # Create a new fullscreen window for the image
+        self.image_window = tk.Toplevel()
+        self.image_window.attributes('-fullscreen', True)
+        self.image_window.attributes('-topmost', True)
+        self.image_window.configure(bg='black')
+        
+        # Remove window decorations
+        self.image_window.overrideredirect(True)
+        
+        # Get screen dimensions
+        screen_width = self.image_window.winfo_screenwidth()
+        screen_height = self.image_window.winfo_screenheight()
+        
+        # Create a canvas for the image
+        image_canvas = tk.Canvas(
+            self.image_window,
+            bg='black',
+            highlightthickness=0,
+            width=screen_width,
+            height=screen_height
+        )
+        image_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Try to load and display the image
+        if self.close_image_loaded and self.close_image:
+            try:
+                # Resize image to fit screen while maintaining aspect ratio
+                img = self.close_image.copy()
+                img.thumbnail((screen_width, screen_height), Image.Resampling.LANCZOS)
+                
+                # Convert to PhotoImage
+                self.close_image_photo = ImageTk.PhotoImage(img)
+                
+                # Calculate position to center the image
+                img_width = img.width
+                img_height = img.height
+                x_pos = (screen_width - img_width) // 2
+                y_pos = (screen_height - img_height) // 2
+                
+                # Display the image
+                image_canvas.create_image(x_pos, y_pos, anchor=tk.NW, image=self.close_image_photo)
+                
+                # Add a subtle fade-in effect
+                self.image_window.attributes('-alpha', 0)
+                self.fade_in_image_window()
+                
+            except Exception as e:
+                print(f"Failed to display image: {e}")
+                self.show_error_message(image_canvas, screen_width, screen_height)
+        else:
+            # Image not loaded, show error or fallback
+            self.show_error_message(image_canvas, screen_width, screen_height)
+        
+        # Bind escape key to close image window immediately
+        self.image_window.bind('<Escape>', lambda e: self.close_all_windows())
+        
+        # Schedule window to close after duration
+        self.image_window.after(self.config["close_image_duration"], self.close_all_windows)
+    
+    def fade_in_image_window(self):
+        """Fade in the image window smoothly"""
+        current_alpha = self.image_window.attributes('-alpha')
+        if current_alpha < 1.0:
+            new_alpha = min(1.0, current_alpha + 0.05)
+            self.image_window.attributes('-alpha', new_alpha)
+            self.image_window.after(20, self.fade_in_image_window)
+    
+    def show_error_message(self, canvas, screen_width, screen_height):
+        """Show an error message if image fails to load"""
+        canvas.create_text(
+            screen_width // 2,
+            screen_height // 2,
+            text="Image Failed to Load\nClosing...",
+            font=("Arial", 40, "bold"),
+            fill="white",
+            justify=tk.CENTER
+        )
+    
+    def close_all_windows(self):
+        """Close both the image window and main window"""
+        try:
+            self.image_window.destroy()
+        except:
+            pass
+        try:
+            self.root.destroy()
+        except:
+            pass
     
     def animate(self):
         """Update the breathing and text movement animations"""
