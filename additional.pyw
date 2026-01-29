@@ -1,3 +1,4 @@
+
 import tkinter as tk
 import math
 import time
@@ -34,7 +35,7 @@ CONFIG = {
     
     # Position settings
     "position": "center",                # Window position: "center" or (x, y) coordinates
-    "always_on_top": False,              # Keep window on top of other windows
+    "always_on_top": True,              # Keep window on top of other windows
     
     # Interaction settings
     "draggable": True,                   # Allow window to be dragged
