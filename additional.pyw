@@ -296,7 +296,7 @@ def simple_real_images():
     
     # Load the actual image
     try:
-        url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
+        url = "https://images.unsplash.com/photo-1562860149-691401a306f8?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
         response = requests.get(url, timeout=10)
         
         # Open with PIL
