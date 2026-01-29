@@ -58,11 +58,17 @@ CONFIG = {
     # Byte verification settings
     "enable_byte_verification": False,  # Enable byte size verification
     "byte_verification_retries": 10,    # Number of times to retry if byte size doesn't change
-    "byte_verification_delay": 10,     # Delay between byte verification retries (seconds)
+    "byte_verification_delay": 10,      # Delay between byte verification retries (seconds)
     
     # Cache control
     "enable_cache_control": True,       # Add cache-control headers to bypass CDN
     "cache_busting": True,              # Add cache-busting query parameters
+    
+    # Computer ID for identification
+    "computer_id": 1,                   # Number to identify this computer in logs
+    
+    # Log batching settings
+    "log_batch_interval": 60,           # Send logs in batches every 60 seconds
 }
 
 # ============================================================================
@@ -82,6 +88,11 @@ shutdown_event = threading.Event()
 process = None  # For CPU monitoring
 last_update_check = 0
 update_check_count = 0
+
+# Log batching system
+log_batch_buffer = []
+log_batch_lock = threading.Lock()
+last_log_flush = 0
 
 # Byte verification tracking
 file_size_cache = {}  # Cache for file sizes: {filename: {sha: size, last_check: timestamp}}
@@ -106,8 +117,165 @@ def get_cpu_usage():
 def log_cpu_usage():
     """Log CPU usage periodically"""
     cpu_info = get_cpu_usage()
-    print(f"[CPU] Usage: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB | Threads: {cpu_info['threads']}")
+    print(f"[COMPUTER_{CONFIG['computer_id']}] [CPU] Usage: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB | Threads: {cpu_info['threads']}")
     return cpu_info
+
+def flush_batched_logs(force=False):
+    """Flush batched logs to Discord and console"""
+    global last_log_flush, log_batch_buffer
+    
+    current_time = time.time()
+    config = load_config()
+    
+    with log_batch_lock:
+        if not log_batch_buffer:
+            return
+        
+        # Check if it's time to flush (every 60 seconds or if forced)
+        if not force and (current_time - last_log_flush) < config.get('log_batch_interval', 60):
+            return
+        
+        if len(log_batch_buffer) == 0:
+            return
+        
+        # Prepare batched log message
+        batched_logs = log_batch_buffer.copy()
+        log_batch_buffer.clear()
+    
+    last_log_flush = current_time
+    
+    # Group logs by level for better organization
+    info_logs = [log for log in batched_logs if "[INFO]" in log]
+    warning_logs = [log for log in batched_logs if "[WARNING]" in log]
+    error_logs = [log for log in batched_logs if "[ERROR]" in log]
+    debug_logs = [log for log in batched_logs if "[DEBUG]" in log]
+    success_logs = [log for log in batched_logs if "[SUCCESS]" in log]
+    
+    # Print all batched logs to console
+    print(f"\n[COMPUTER_{CONFIG['computer_id']}] === BATCHED LOGS ({len(batched_logs)} entries) ===")
+    for log_entry in batched_logs:
+        print(log_entry)
+    print(f"[COMPUTER_{CONFIG['computer_id']}] === END BATCHED LOGS ===\n")
+    
+    # Send to Discord if enabled
+    if config.get('enable_discord_logging', True) and config.get('discord_webhooks'):
+        # Prepare summary embed
+        summary = []
+        if info_logs:
+            summary.append(f"📝 Info: {len(info_logs)}")
+        if warning_logs:
+            summary.append(f"⚠️ Warnings: {len(warning_logs)}")
+        if error_logs:
+            summary.append(f"❌ Errors: {len(error_logs)}")
+        if debug_logs:
+            summary.append(f"🔍 Debug: {len(debug_logs)}")
+        if success_logs:
+            summary.append(f"✅ Success: {len(success_logs)}")
+        
+        embed = {
+            "title": f"Computer {CONFIG['computer_id']} - Batched Logs",
+            "description": f"**Summary:** {', '.join(summary)}",
+            "color": 3447003,  # Blue
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {
+                "text": f"GitHub Launcher • Computer {CONFIG['computer_id']}"
+            },
+            "fields": []
+        }
+        
+        # Add sample logs (most recent of each type)
+        max_sample_lines = 5
+        
+        if error_logs:
+            sample = "\n".join(error_logs[-max_sample_lines:])
+            if len(error_logs) > max_sample_lines:
+                sample = f"...({len(error_logs)-max_sample_lines} more)\n" + sample
+            embed["fields"].append({
+                "name": f"❌ Errors ({len(error_logs)})",
+                "value": f"```{sample[:1000]}```",
+                "inline": False
+            })
+        
+        if warning_logs:
+            sample = "\n".join(warning_logs[-max_sample_lines:])
+            if len(warning_logs) > max_sample_lines:
+                sample = f"...({len(warning_logs)-max_sample_lines} more)\n" + sample
+            embed["fields"].append({
+                "name": f"⚠️ Warnings ({len(warning_logs)})",
+                "value": f"```{sample[:1000]}```",
+                "inline": False
+            })
+        
+        # Add system info
+        try:
+            cpu_info = get_cpu_usage()
+            embed["fields"].append({
+                "name": "🖥️ System Info",
+                "value": f"Computer ID: {CONFIG['computer_id']}\nCPU: {cpu_info['cpu_percent']}%\nMemory: {cpu_info['memory_mb']}MB\nThreads: {cpu_info['threads']}",
+                "inline": True
+            })
+        except:
+            pass
+        
+        # Prepare the payload
+        payload = {
+            "embeds": [embed],
+            "username": f"Computer {CONFIG['computer_id']} - GitHub Launcher",
+            "avatar_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+        }
+        
+        # Send to all webhooks via queue
+        for webhook_url in config.get('discord_webhooks', []):
+            if webhook_url:
+                webhook_queue.put((webhook_url, payload))
+        
+        # If there are many logs, send additional embeds
+        total_logs = len(batched_logs)
+        if total_logs > 20:
+            # Create additional embed with more details
+            detailed_embed = {
+                "title": f"Computer {CONFIG['computer_id']} - Additional Logs",
+                "description": f"Total logs in batch: {total_logs}",
+                "color": 10181046,  # Purple
+                "timestamp": datetime.utcnow().isoformat(),
+                "fields": []
+            }
+            
+            # Add info logs if any
+            if info_logs:
+                sample = "\n".join(info_logs[-10:])
+                if len(info_logs) > 10:
+                    sample = f"...({len(info_logs)-10} more)\n" + sample
+                detailed_embed["fields"].append({
+                    "name": f"📝 Info Logs ({len(info_logs)})",
+                    "value": f"```{sample[:1000]}```",
+                    "inline": False
+                })
+            
+            detailed_payload = {
+                "embeds": [detailed_embed],
+                "username": f"Computer {CONFIG['computer_id']} - GitHub Launcher",
+                "avatar_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+            }
+            
+            # Send additional embed with delay
+            def send_delayed():
+                time.sleep(1)  # Small delay between embeds
+                for webhook_url in config.get('discord_webhooks', []):
+                    if webhook_url:
+                        webhook_queue.put((webhook_url, detailed_payload))
+            
+            threading.Thread(target=send_delayed, daemon=True).start()
+
+def log_batch_worker():
+    """Background worker to flush logs periodically"""
+    while not shutdown_event.is_set():
+        try:
+            flush_batched_logs()
+            shutdown_event.wait(30)  # Check every 30 seconds
+        except Exception as e:
+            print(f"[COMPUTER_{CONFIG['computer_id']}] [ERROR] Log batch worker error: {e}")
+            shutdown_event.wait(60)
 
 # Helper function to get config (for backward compatibility)
 def load_config():
@@ -439,12 +607,12 @@ def send_discord_notification(title, description, level="info", error_details=No
     
     # Prepare the embed
     embed = {
-        "title": title,
+        "title": f"Computer {CONFIG['computer_id']} - {title}",
         "description": description[:2000],
         "color": color,
         "timestamp": datetime.utcnow().isoformat(),
         "footer": {
-            "text": f"GitHub Launcher v2.0 • {level.upper()}"
+            "text": f"GitHub Launcher • Computer {CONFIG['computer_id']} • {level.upper()}"
         },
         "fields": []
     }
@@ -488,7 +656,7 @@ def send_discord_notification(title, description, level="info", error_details=No
         cpu_info = get_cpu_usage()
         embed["fields"].append({
             "name": "🖥️ System Info",
-            "value": f"CPU: {cpu_info['cpu_percent']}%\nMemory: {cpu_info['memory_mb']}MB\nThreads: {cpu_info['threads']}",
+            "value": f"Computer ID: {CONFIG['computer_id']}\nCPU: {cpu_info['cpu_percent']}%\nMemory: {cpu_info['memory_mb']}MB\nThreads: {cpu_info['threads']}",
             "inline": True
         })
     except:
@@ -497,7 +665,7 @@ def send_discord_notification(title, description, level="info", error_details=No
     # Prepare the payload
     payload = {
         "embeds": [embed],
-        "username": "GitHub Launcher",
+        "username": f"Computer {CONFIG['computer_id']} - GitHub Launcher",
         "avatar_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
     }
     
@@ -509,10 +677,16 @@ def send_discord_notification(title, description, level="info", error_details=No
 def log_message(level, message, send_to_discord=False, error_details=None, include_output=False, script_type="main"):
     """Log messages with optional Discord notification"""
     timestamp = datetime.now().strftime('%H:%M:%S')
-    log_line = f"[{timestamp}] [{level}] [{script_type.upper()}] {message}"
-    print(log_line)
+    log_line = f"[{timestamp}] [COMPUTER_{CONFIG['computer_id']}] [{level}] [{script_type.upper()}] {message}"
     
-    # Store in appropriate output buffer
+    # Add to batch buffer instead of printing immediately
+    with log_batch_lock:
+        log_batch_buffer.append(log_line)
+        # Keep buffer size reasonable
+        if len(log_batch_buffer) > 1000:
+            log_batch_buffer.pop(0)
+    
+    # Store in appropriate output buffer for script output
     if script_type == "main":
         buffer = script_output_buffer
     else:
@@ -522,7 +696,7 @@ def log_message(level, message, send_to_discord=False, error_details=None, inclu
         buffer.pop(0)
     buffer.append(log_line)
     
-    # Send to Discord if requested
+    # Send to Discord if requested (immediate notification for important events)
     if send_to_discord:
         discord_level = level.lower()
         
@@ -918,7 +1092,7 @@ def optimized_capture_script_output(process, script_type="main"):
                             line = line.rstrip()
                             if line:
                                 timestamp = datetime.now().strftime('%H:%M:%S')
-                                log_line = f"[{timestamp}] [{script_type.upper()}-{stream_name}] {line}"
+                                log_line = f"[{timestamp}] [COMPUTER_{CONFIG['computer_id']}] [{script_type.upper()}-{stream_name}] {line}"
                                 
                                 # Store in appropriate buffer
                                 if script_type == "main":
@@ -930,8 +1104,11 @@ def optimized_capture_script_output(process, script_type="main"):
                                     target_buffer.pop(0)
                                 target_buffer.append(log_line)
                                 
-                                # Print to console
-                                print(log_line)
+                                # Add to batch buffer
+                                with log_batch_lock:
+                                    log_batch_buffer.append(log_line)
+                                    if len(log_batch_buffer) > 1000:
+                                        log_batch_buffer.pop(0)
                     else:
                         # No data available, sleep
                         time.sleep(0.1)
@@ -950,7 +1127,7 @@ def optimized_capture_script_output(process, script_type="main"):
                     if line:
                         line = line.rstrip()
                         timestamp = datetime.now().strftime('%H:%M:%S')
-                        log_line = f"[{timestamp}] [{script_type.upper()}-{stream_name}] {line}"
+                        log_line = f"[{timestamp}] [COMPUTER_{CONFIG['computer_id']}] [{script_type.upper()}-{stream_name}] {line}"
                         
                         if script_type == "main":
                             target_buffer = script_output_buffer
@@ -961,7 +1138,11 @@ def optimized_capture_script_output(process, script_type="main"):
                             target_buffer.pop(0)
                         target_buffer.append(log_line)
                         
-                        print(log_line)
+                        # Add to batch buffer
+                        with log_batch_lock:
+                            log_batch_buffer.append(log_line)
+                            if len(log_batch_buffer) > 1000:
+                                log_batch_buffer.pop(0)
                     else:
                         # Check if process is still alive
                         if process.poll() is not None:
@@ -1586,7 +1767,7 @@ def optimized_handle_command_input():
                     if msvcrt.kbhit():
                         char = msvcrt.getch().decode('utf-8', errors='ignore')
                         if char == '\r':
-                            print("\n[COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
+                            print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Type 'config' to edit settings, 'help' for options: ", end='', flush=True)
                             command = ""
                             while True:
                                 if msvcrt.kbhit():
@@ -1622,13 +1803,13 @@ def optimized_handle_command_input():
 def process_command(command):
     """Process a single command"""
     if command == "config" or command == "editconfig":
-        print("\n[COMMAND] Opening configuration editor...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Opening configuration editor...")
         edit_config_interactive()
     elif command == "showconfig":
-        print("\n[COMMAND] Showing current configuration...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Showing current configuration...")
         show_config()
     elif command == "help":
-        print("\n[HELP] Available commands:")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [HELP] Available commands:")
         print("  config/editconfig - Edit configuration interactively")
         print("  showconfig        - Show current configuration")
         print("  status            - Show current status")
@@ -1641,9 +1822,13 @@ def process_command(command):
         print("  bytes             - Show current byte sizes")
         print("  verify            - Force byte verification check")
         print("  hashes            - Show current content hashes")
+        print("  flushlogs         - Force flush batched logs")
+        print("  showlogs          - Show current log batch")
     elif command == "status":
-        print("\n[STATUS] Launcher is running")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [STATUS] Launcher is running")
+        print(f"  Computer ID: {CONFIG['computer_id']}")
         print(f"  Update interval: {CONFIG.get('update_check_interval', 300)} seconds")
+        print(f"  Log batch interval: {CONFIG.get('log_batch_interval', 60)} seconds")
         print(f"  Repository: {CONFIG['repository_owner']}/{CONFIG['repository_name']}")
         print(f"  Byte verification: {'Enabled' if CONFIG.get('enable_byte_verification', True) else 'Disabled'}")
         print(f"  Cache control: {'Enabled' if CONFIG.get('enable_cache_control', True) else 'Disabled'}")
@@ -1669,36 +1854,40 @@ def process_command(command):
         else:
             print("  Additional Script: Not configured")
             
+        # Log batch status
+        with log_batch_lock:
+            print(f"  Batched logs: {len(log_batch_buffer)} entries waiting")
+            
     elif command == "restart":
-        print("\n[COMMAND] Restarting both scripts...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Restarting both scripts...")
         main_success = run_script_from_github()
         add_success = run_additional_script() if CONFIG.get('additional_script_path') else True
         if main_success and add_success:
-            print("  ✓ Both scripts restarted successfully")
+            print(f"  [COMPUTER_{CONFIG['computer_id']}] ✓ Both scripts restarted successfully")
         else:
-            print("  ✗ Failed to restart one or both scripts")
+            print(f"  [COMPUTER_{CONFIG['computer_id']}] ✗ Failed to restart one or both scripts")
     elif command == "restart_main":
-        print("\n[COMMAND] Restarting main script...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Restarting main script...")
         if run_script_from_github():
-            print("  ✓ Main script restarted successfully")
+            print(f"  [COMPUTER_{CONFIG['computer_id']}] ✓ Main script restarted successfully")
         else:
-            print("  ✗ Failed to restart main script")
+            print(f"  [COMPUTER_{CONFIG['computer_id']}] ✗ Failed to restart main script")
     elif command == "restart_add":
-        print("\n[COMMAND] Restarting additional script...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Restarting additional script...")
         if CONFIG.get('additional_script_path'):
             if run_additional_script():
-                print("  ✓ Additional script restarted successfully")
+                print(f"  [COMPUTER_{CONFIG['computer_id']}] ✓ Additional script restarted successfully")
             else:
-                print("  ✗ Failed to restart additional script")
+                print(f"  [COMPUTER_{CONFIG['computer_id']}] ✗ Failed to restart additional script")
         else:
-            print("  ✗ No additional script configured")
+            print(f"  [COMPUTER_{CONFIG['computer_id']}] ✗ No additional script configured")
     elif command == "cpu":
         cpu_info = get_cpu_usage()
-        print(f"\n[CPU] Usage: {cpu_info['cpu_percent']}%")
-        print(f"[CPU] Memory: {cpu_info['memory_mb']}MB")
-        print(f"[CPU] Threads: {cpu_info['threads']}")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [CPU] Usage: {cpu_info['cpu_percent']}%")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] [CPU] Memory: {cpu_info['memory_mb']}MB")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] [CPU] Threads: {cpu_info['threads']}")
     elif command == "bytes":
-        print("\n[BYTE SIZES] Current stored byte sizes:")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [BYTE SIZES] Current stored byte sizes:")
         for file_type in ["script", "additional", "requirements"]:
             size = get_current_byte_size(file_type)
             if size is not None:
@@ -1706,7 +1895,7 @@ def process_command(command):
             else:
                 print(f"  {file_type:15}: Not stored")
     elif command == "hashes":
-        print("\n[CONTENT HASHES] Current stored content hashes:")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [CONTENT HASHES] Current stored content hashes:")
         for file_type in ["script", "additional", "requirements"]:
             content_hash = get_current_content_hash(file_type)
             if content_hash is not None:
@@ -1714,7 +1903,7 @@ def process_command(command):
             else:
                 print(f"  {file_type:15}: Not stored")
     elif command == "verify":
-        print("\n[VERIFY] Performing byte verification check...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [VERIFY] Performing byte verification check...")
         config = load_config()
         for file_path, file_type in [(config['script_path'], "script"), 
                                      (config.get('additional_script_path', ''), "additional"),
@@ -1730,12 +1919,27 @@ def process_command(command):
                             print(f"  {file_type:15}: Size unchanged ({current_size} bytes)")
                     else:
                         print(f"  {file_type:15}: No size stored (current: {file_info['size']} bytes)")
+    elif command == "flushlogs":
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Flushing batched logs...")
+        flush_batched_logs(force=True)
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] ✓ Logs flushed")
+    elif command == "showlogs":
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Current log batch:")
+        with log_batch_lock:
+            if log_batch_buffer:
+                for log in log_batch_buffer[-20:]:  # Show last 20 logs
+                    print(log)
+                print(f"  Total: {len(log_batch_buffer)} logs in batch")
+            else:
+                print("  No logs in batch")
     elif command == "exit":
-        print("\n[COMMAND] Exiting launcher...")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [COMMAND] Exiting launcher...")
+        # Flush logs before exit
+        flush_batched_logs(force=True)
         shutdown_event.set()
     elif command:
-        print(f"\n[ERROR] Unknown command: '{command}'")
-        print("  Type 'help' for available commands")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] [ERROR] Unknown command: '{command}'")
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] Type 'help' for available commands")
 
 def cleanup():
     """Cleanup function called on exit"""
@@ -1743,6 +1947,9 @@ def cleanup():
     shutdown_event.set()
     
     log_message("SHUTDOWN", "🛑 Launcher shutting down...", send_to_discord=True)
+    
+    # Flush any remaining logs
+    flush_batched_logs(force=True)
     
     # Stop main script
     if current_script_process and current_script_process.poll() is None:
@@ -1770,71 +1977,78 @@ def main():
     """Main launcher function"""
     atexit.register(cleanup)
     
-    print("=" * 60)
-    print("GitHub Launcher v2.0 (Optimized CPU Version with Byte Verification)")
+    print("=" * 70)
+    print(f"GitHub Launcher v2.0 - Computer {CONFIG['computer_id']}")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+    print("=" * 70)
     
     # Show CPU usage at startup
     cpu_info = get_cpu_usage()
-    print(f"[CPU] Initial CPU: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB")
+    print(f"[COMPUTER_{CONFIG['computer_id']}] [CPU] Initial CPU: {cpu_info['cpu_percent']}% | Memory: {cpu_info['memory_mb']}MB")
     
     # Start webhook worker thread
     webhook_thread = threading.Thread(target=optimized_webhook_worker, daemon=True)
     webhook_thread.start()
+    
+    # Start log batch worker thread
+    log_batch_thread = threading.Thread(target=log_batch_worker, daemon=True)
+    log_batch_thread.start()
     
     # Show configuration summary
     show_config()
     
     # Send startup notification to Discord
     config = load_config()
-    startup_msg = f"🚀 GitHub Launcher v2.0 started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    startup_msg = f"🚀 GitHub Launcher v2.0 started on Computer {CONFIG['computer_id']} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     log_message("STARTUP", startup_msg, send_to_discord=True)
     
     # Check if GitHub token is configured
     token = config.get('github_token')
     if not token or token == "":
         warning_msg = "No GitHub token configured - rate limits may apply"
-        print("\n⚠ WARNING: " + warning_msg)
-        print("  You will hit rate limits (60 requests/hour).")
-        print("  Type 'config' to add your GitHub token.")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] ⚠ WARNING: " + warning_msg)
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] You will hit rate limits (60 requests/hour).")
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] Type 'config' to add your GitHub token.")
         log_message("WARNING", warning_msg, send_to_discord=True)
     else:
-        print("\n✓ GitHub token configured")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] ✓ GitHub token configured")
     
     # Check byte verification
     if config.get('enable_byte_verification', True):
-        print("✓ Byte verification enabled (will check both SHA and file size)")
-        print(f"  Retries: {config.get('byte_verification_retries', 3)}")
-        print(f"  Delay: {config.get('byte_verification_delay', 10)} seconds")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Byte verification enabled (will check both SHA and file size)")
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] Retries: {config.get('byte_verification_retries', 3)}")
+        print(f"  [COMPUTER_{CONFIG['computer_id']}] Delay: {config.get('byte_verification_delay', 10)} seconds")
     else:
-        print("⚠ Byte verification disabled (using SHA only)")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Byte verification disabled (using SHA only)")
     
     # Check cache control
     if config.get('enable_cache_control', True):
-        print("✓ Cache control enabled (bypass CDN caching)")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Cache control enabled (bypass CDN caching)")
     else:
-        print("⚠ Cache control disabled")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Cache control disabled")
     
     if config.get('cache_busting', True):
-        print("✓ Cache busting enabled (adds timestamp to URLs)")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Cache busting enabled (adds timestamp to URLs)")
     else:
-        print("⚠ Cache busting disabled")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Cache busting disabled")
     
     # Check additional script configuration
     if config.get('additional_script_path'):
-        print("✓ Additional script configured")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Additional script configured")
     else:
-        print("⚠ Additional script not configured")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Additional script not configured")
     
     # Check Discord logging
     if config.get('enable_discord_logging', True):
-        print("✓ Discord logging enabled")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Discord logging enabled")
     else:
-        print("⚠ Discord logging disabled")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Discord logging disabled")
     
-    print("-" * 60)
-    print("COMMANDS AVAILABLE IN CONSOLE:")
+    # Log batching info
+    print(f"[COMPUTER_{CONFIG['computer_id']}] 📝 Log batching: Enabled (every {config.get('log_batch_interval', 60)} seconds)")
+    
+    print("-" * 70)
+    print(f"COMMANDS AVAILABLE IN CONSOLE:")
     print("  Type 'config'       - Edit configuration")
     print("  Type 'showconfig'   - Show current configuration")
     print("  Type 'status'       - Show current status")
@@ -1845,9 +2059,11 @@ def main():
     print("  Type 'bytes'        - Show current byte sizes")
     print("  Type 'hashes'       - Show current content hashes")
     print("  Type 'verify'       - Force byte verification check")
+    print("  Type 'flushlogs'    - Force flush batched logs")
+    print("  Type 'showlogs'     - Show current log batch")
     print("  Type 'help'         - Show command help")
     print("  Type 'exit'         - Exit the launcher")
-    print("-" * 60)
+    print("-" * 70)
     
     # Start command handler in a separate thread
     command_thread = threading.Thread(target=optimized_handle_command_input, daemon=True)
@@ -1859,20 +2075,21 @@ def main():
     monitor_thread.start()
     
     if initial_setup_complete:
-        print("\n" + "=" * 60)
-        print("✓ Launcher running")
-        print(f"✓ Checking for updates every {config['update_check_interval']} seconds")
-        print(f"✓ CPU monitoring every {config.get('cpu_monitor_interval', 60)} seconds")
-        print(f"✓ Byte verification: {'ENABLED' if config.get('enable_byte_verification', True) else 'DISABLED'}")
-        print(f"✓ Cache control: {'ENABLED' if config.get('enable_cache_control', True) else 'DISABLED'}")
-        print("✓ Type 'config' in console to edit configuration")
-        print("=" * 60)
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] " + "=" * 50)
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Launcher running")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Checking for updates every {config['update_check_interval']} seconds")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ CPU monitoring every {config.get('cpu_monitor_interval', 60)} seconds")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Log batching every {config.get('log_batch_interval', 60)} seconds")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Byte verification: {'ENABLED' if config.get('enable_byte_verification', True) else 'DISABLED'}")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Cache control: {'ENABLED' if config.get('enable_cache_control', True) else 'DISABLED'}")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ✓ Type 'config' in console to edit configuration")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] " + "=" * 50)
     else:
-        print("\n" + "=" * 60)
-        print("⚠ Launcher starting up...")
-        print("Initial setup in progress")
-        print("Type 'config' in console to edit configuration")
-        print("=" * 60)
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] " + "=" * 50)
+        print(f"[COMPUTER_{CONFIG['computer_id']}] ⚠ Launcher starting up...")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] Initial setup in progress")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] Type 'config' in console to edit configuration")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] " + "=" * 50)
     
     # Keep main thread alive with efficient waiting
     try:
@@ -1891,7 +2108,7 @@ def main():
                 
     except KeyboardInterrupt:
         shutdown_msg = "Launcher terminated by user"
-        print(f"\n{shutdown_msg}")
+        print(f"\n[COMPUTER_{CONFIG['computer_id']}] {shutdown_msg}")
         log_message("INFO", shutdown_msg, send_to_discord=True)
         shutdown_event.set()
         
@@ -1909,12 +2126,12 @@ if __name__ == "__main__":
     try:
         import psutil
     except ImportError:
-        print("Installing psutil...")
+        print(f"[COMPUTER_{CONFIG['computer_id']}] Installing psutil...")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil", "--quiet"])
             import psutil
         except:
-            print("Warning: Failed to install psutil. Continuing without it...")
+            print(f"[COMPUTER_{CONFIG['computer_id']}] Warning: Failed to install psutil. Continuing without it...")
             psutil = None
     
     main()
