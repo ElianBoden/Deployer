@@ -74,7 +74,7 @@ def main():
     # Try to load and display the image
     try:
         # Use a much scarier image
-        image_url = "https://images.unsplash.com/photo-1562860149-691401a306f8?q=80&w=687&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
+        image_url = "https://imageio.forbes.com/specials-images/imageserve/504446482/A-faceless-hooded-figure--with-finger-to--mouth--in-a-shh-gesture-/0x0.jpg?width=960&dpr=1"
         
         if image_url and image_url.strip():
             # Download image
