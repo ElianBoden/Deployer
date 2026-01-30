@@ -179,7 +179,7 @@ class ImageGridDisplay:
         
         # Image URL (using a reliable placeholder image)
         image_urls = [
-            "https://www.shutterstock.com/image-photo/dnipro-ukraine-31-jan-2024-600nw-2432138019.jpg",
+            "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRIct2KYf5NwAszvXyj2ccwg6r_GQ7mWLSLGA&s",
         ]
         
         image = None
