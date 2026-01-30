@@ -179,9 +179,7 @@ class ImageGridDisplay:
         
         # Image URL (using a reliable placeholder image)
         image_urls = [
-            "https://images.unsplash.com/photo-1562860149-691401a306f8?w=400&h=300&fit=crop",
-            "https://picsum.photos/400/300",  # Random placeholder
-            "https://via.placeholder.com/400x300/FF0000/FFFFFF?text=Image+Display"
+            "https://www.shutterstock.com/image-photo/dnipro-ukraine-31-jan-2024-600nw-2432138019.jpg",
         ]
         
         image = None
