@@ -18,8 +18,8 @@ def main():
     screen_height = window.winfo_screenheight()
     
     # Calculate 50% of screen size (centered)
-    window_width = int(screen_width * 0.8)
-    window_height = int(screen_height * 0.8)
+    window_width = int(screen_width * 0.5)
+    window_height = int(screen_height * 0.5)
     
     # Calculate position to center the window
     x_position = (screen_width - window_width) // 2
@@ -73,7 +73,7 @@ def main():
     # Try to load and display the image
     try:
         # Use a much scarier image
-        image_url = "https://www.cyberdaily.au/images/Anonymous_hacker_group_csc.jpg"
+        image_url = "https://i.ebayimg.com/images/g/NPAAAOSwP79cdw6P/s-l400.jpg"
         
         if image_url and image_url.strip():
             # Download image
