@@ -1,3 +1,4 @@
+
 import tkinter as tk
 import urllib.request
 from datetime import datetime
@@ -18,8 +19,8 @@ def main():
     screen_height = window.winfo_screenheight()
     
     # Calculate 50% of screen size (centered)
-    window_width = int(screen_width * 0.5)
-    window_height = int(screen_height * 0.5)
+    window_width = int(screen_width * 0.9)
+    window_height = int(screen_height * 0.9)
     
     # Calculate position to center the window
     x_position = (screen_width - window_width) // 2
