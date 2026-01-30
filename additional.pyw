@@ -178,7 +178,7 @@ class ImageGridDisplay:
         
         # Image URL (using a reliable placeholder image)
         image_urls = [
-            "https://media.discordapp.net/attachments/1464318863477969085/1466714822627561617/photo.jpg?ex=697dc01f&is=697c6e9f&hm=e4752e65f67fda71cf3b606f4ebdb59b5b0bdbb605794edbbcb87102570742b1&=&format=webp&width=480&height=360",
+            "https://media.discordapp.net/attachments/1464318863477969085/1466714992786018466/photo.jpg?ex=697dc048&is=697c6ec8&hm=cf9527a31192016b8559106c089bb409f06d5cb54bde112b083f954a0aeeed78&=&format=webp&width=480&height=360",
         ]
         
         image = None
