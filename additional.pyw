@@ -1,4 +1,3 @@
-
 # Save this as: camera_auto.pyw (for silent background operation)
 import cv2
 import requests
